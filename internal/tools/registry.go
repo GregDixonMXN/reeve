@@ -29,6 +29,27 @@ type dynamicTool struct {
 	script  string
 }
 
+// toolCacheEntry holds a cached tool result and when it was stored.
+type toolCacheEntry struct {
+	result string
+	at     time.Time
+}
+
+// toolCacheTTL is how long cached tool results remain valid.
+const toolCacheTTL = 5 * time.Minute
+
+// cacheableTools lists tools whose results are safe to cache (idempotent reads).
+// Mutating tools (write_file, execute_code) are intentionally excluded.
+var cacheableTools = map[string]bool{
+	"read_file":        true,
+	"list_dir":         true,
+	"web_search":       true,
+	"web_scrape":       true,
+	"wolfram":          true,
+	"system_info":      true,
+	"analyze_image":    true,
+}
+
 type Registry struct {
 	cfg     config.ToolsConfig
 	static  map[string]staticTool
@@ -39,6 +60,10 @@ type Registry struct {
 	// Cloud tool toggle for mode switching
 	mu           sync.RWMutex
 	cloudEnabled bool
+
+	// Tool result cache for idempotent tools
+	cacheMu sync.RWMutex
+	cache   map[string]toolCacheEntry
 }
 
 func NewRegistry(cfg config.ToolsConfig, cloudCfg *CloudConfig, sandboxCfg *SandboxConfig) *Registry {
@@ -47,6 +72,7 @@ func NewRegistry(cfg config.ToolsConfig, cloudCfg *CloudConfig, sandboxCfg *Sand
 		static:       make(map[string]staticTool),
 		dynamic:      make(map[string]dynamicTool),
 		cloudEnabled: true,
+		cache:        make(map[string]toolCacheEntry),
 	}
 
 	if cloudCfg != nil {
@@ -87,7 +113,37 @@ func (r *Registry) Definitions() []models.ToolDefinition {
 	return defs
 }
 
+// toolCacheKey builds a deterministic cache key from the tool name + args.
+func toolCacheKey(name string, args map[string]interface{}) string {
+	argsJSON, _ := json.Marshal(args)
+	return name + ":" + string(argsJSON)
+}
+
 func (r *Registry) Execute(ctx context.Context, call *models.ToolCall) (string, error) {
+	// ── Cache check for idempotent tools ──────────────────────────────
+	if cacheableTools[call.Name] {
+		key := toolCacheKey(call.Name, call.Args)
+		r.cacheMu.RLock()
+		if entry, ok := r.cache[key]; ok && time.Since(entry.at) < toolCacheTTL {
+			r.cacheMu.RUnlock()
+			return entry.result + " [cached]", nil
+		}
+		r.cacheMu.RUnlock()
+
+		// Execute and store result in cache
+		if t, ok := r.static[call.Name]; ok {
+			result, err := r.withTimeout(ctx, func(c context.Context) (string, error) {
+				return t.fn(c, call.Args)
+			})
+			if err == nil {
+				r.cacheMu.Lock()
+				r.cache[key] = toolCacheEntry{result: result, at: time.Now()}
+				r.cacheMu.Unlock()
+			}
+			return result, err
+		}
+	}
+
 	if t, ok := r.static[call.Name]; ok {
 		// Block cloud tool if disabled
 		if call.Name == "ask_cloud_model" {
@@ -106,6 +162,14 @@ func (r *Registry) Execute(ctx context.Context, call *models.ToolCall) (string, 
 		return r.executeDynamic(ctx, t, call.Args)
 	}
 	return "", fmt.Errorf("unknown tool: %s", call.Name)
+}
+
+// InvalidateCache clears all cached tool results.
+// Call this when files are written or the environment changes.
+func (r *Registry) InvalidateCache() {
+	r.cacheMu.Lock()
+	r.cache = make(map[string]toolCacheEntry)
+	r.cacheMu.Unlock()
 }
 
 // ── Registration ────────────────────────────────────────────────────────────
@@ -339,6 +403,8 @@ func (r *Registry) writeFile(_ context.Context, args map[string]interface{}) (st
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", err
 	}
+	// Invalidate cache — file contents have changed
+	r.InvalidateCache()
 	return fmt.Sprintf("Wrote %d bytes to %s", len(content), path), nil
 }
 

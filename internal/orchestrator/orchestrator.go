@@ -21,6 +21,18 @@ const MaxToolIterations = 10
 // TaskCompleteToken is the sentinel the LLM emits to break the agent loop early.
 const TaskCompleteToken = "<TASK_COMPLETE>"
 
+// maxContextMessages is the sliding-window ceiling for conversation history
+// passed to the LLM. Older messages beyond this are dropped to prevent
+// context overflow and keep inference fast.
+const maxContextMessages = 40
+
+// maxToolResultBytes is the max size of a single tool result injected into
+// the context. Larger results are truncated with a notice.
+const maxToolResultBytes = 3000
+
+// complexityThreshold is the minimum word count before planning is attempted.
+const complexityThreshold = 10
+
 // LoopEventKind describes what kind of progress event occurred.
 type LoopEventKind string
 
@@ -114,45 +126,35 @@ func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.
 	if err != nil {
 		o.log.Warn("Memory recall failed: %v", err)
 	}
-
 	if len(memories) > 0 {
 		o.log.Debug("Recalled %d memories (top score: %.3f)", len(memories), memories[0].Score)
 	}
+
+	// Pre-build memory injection once — avoids rebuilding the string every iteration
+	memInjection := buildMemoryInjection(memories)
 
 	// ── THINK-VERIFY-ACT LOOP ───────────────────────────────────────────
 	var finalResponse *cognitive.Response
 	var toolsUsedThisTurn []string
 
 	for i := 0; i < MaxToolIterations; i++ {
-		// Rebuild llmMessages ON EVERY LOOP ITERATION so the LLM
-		// sees the tool results we just added to conv.Messages!
-		llmMessages := make([]models.Message, len(conv.Messages))
-		copy(llmMessages, conv.Messages)
+		// Snapshot current messages (trimmed for context window safety)
+		rawMsgs := make([]models.Message, len(conv.Messages))
+		copy(rawMsgs, conv.Messages)
+		llmMessages := trimContextMessages(rawMsgs)
 
-		// Re-inject the memory context into the temporary prompt dynamically
-		if len(memories) > 0 {
-			var memoryText string
-			for _, m := range memories {
-				if m.Score >= 0.5 {
-					memoryText += fmt.Sprintf("%s\n---\n", m.Content)
-				}
-			}
-
-			if memoryText != "" {
-				injection := fmt.Sprintf("\n\n[VERIFIED SYSTEM MEMORY RECALL: The following past conversations are absolute facts retrieved from your database. Use them to answer the user immediately without asking for files:]\n%s", memoryText)
-
-				// Find the last user message and attach the memory invisibly
-				for j := len(llmMessages) - 1; j >= 0; j-- {
-					if llmMessages[j].Role == models.RoleUser {
-						llmMessages[j].Content += injection
-						break
-					}
+		// Inject memory into the last user message on the first iteration only
+		if i == 0 && memInjection != "" {
+			for j := len(llmMessages) - 1; j >= 0; j-- {
+				if llmMessages[j].Role == models.RoleUser {
+					llmMessages[j].Content += memInjection
+					break
 				}
 			}
 		}
 
 		resp, err := o.cognitive.Generate(o.ctx, cognitive.Request{
-			Messages:      llmMessages, // Now contains the freshest tool results!
+			Messages:      llmMessages,
 			MemoryContext: memories,
 			Tools:         o.tools.Definitions(),
 		})
@@ -215,7 +217,7 @@ func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.
 		ToolsUsed:      toolsUsedThisTurn,
 		MemoryRecalled: len(memories),
 		LatencyMs:      elapsed.Milliseconds(),
-		Reasoning:      finalResponse.Reasoning, // Passing Reasoning to the UI
+		Reasoning:      finalResponse.Reasoning,
 	}, nil
 }
 
@@ -247,29 +249,34 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 		o.log.Warn("Memory recall failed: %v", err)
 	}
 
-	// ── Planning step ────────────────────────────────────────────────────
-	// Ask the LLM to outline a brief plan before executing. This reduces drift
-	// on complex multi-step tasks by keeping the agent anchored to intent.
+	// Pre-build memory injection string once — used in iteration 1 only
+	memInjection := buildMemoryInjection(memories)
+
+	// ── Planning step (complex tasks only) ───────────────────────────────
+	// Only run a planning inference when the request is clearly multi-step.
+	// Simple requests skip this to save a full LLM round-trip.
 	var taskPlan string
-	emit(LoopEvent{Kind: LoopEventThinking, Iteration: 0, Message: "Planning task..."})
-	planResp, planErr := o.cognitive.Generate(o.ctx, cognitive.Request{
-		Messages: []models.Message{
-			{
-				Role: models.RoleUser,
-				Content: fmt.Sprintf(
-					"Before acting, briefly outline your plan to complete the following task. "+
-						"List 1-3 concrete steps only. Be concise.\n\nTASK: %s", userPrompt),
+	if isComplexRequest(userPrompt) {
+		emit(LoopEvent{Kind: LoopEventThinking, Iteration: 0, Message: "Planning task..."})
+		planResp, planErr := o.cognitive.Generate(o.ctx, cognitive.Request{
+			Messages: []models.Message{
+				{
+					Role: models.RoleUser,
+					Content: fmt.Sprintf(
+						"Before acting, briefly outline your plan to complete the following task. "+
+							"List 1-3 concrete steps only. Be concise.\n\nTASK: %s", userPrompt),
+				},
 			},
-		},
-		MemoryContext: memories,
-		Tools:         nil, // no tools during planning — think only
-	})
-	if planErr != nil {
-		o.log.Warn("Planning step failed (non-fatal): %v", planErr)
-	} else if planResp != nil && planResp.Content != "" {
-		taskPlan = planResp.Content
-		o.log.Info("Task plan: %s", taskPlan)
-		emit(LoopEvent{Kind: LoopEventThinking, Iteration: 0, Message: fmt.Sprintf("Plan: %s", taskPlan)})
+			MemoryContext: memories,
+			Tools:         nil, // no tools during planning — think only
+		})
+		if planErr != nil {
+			o.log.Warn("Planning step failed (non-fatal): %v", planErr)
+		} else if planResp != nil && planResp.Content != "" {
+			taskPlan = planResp.Content
+			o.log.Info("Task plan: %s", taskPlan)
+			emit(LoopEvent{Kind: LoopEventThinking, Iteration: 0, Message: fmt.Sprintf("Plan: %s", taskPlan)})
+		}
 	}
 
 	var (
@@ -286,35 +293,23 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 			Message:   fmt.Sprintf("Iteration %d/%d — asking LLM", iteration, MaxToolIterations),
 		})
 
-		// Rebuild message slice fresh each iteration so tool results are visible
-		llmMessages := make([]models.Message, len(conv.Messages))
-		copy(llmMessages, conv.Messages)
+		// Snapshot + trim context window to prevent overflow on long conversations
+		rawMsgs := make([]models.Message, len(conv.Messages))
+		copy(rawMsgs, conv.Messages)
+		llmMessages := trimContextMessages(rawMsgs)
 
-		// Inject plan into first iteration so the LLM stays anchored
-		if iteration == 1 && taskPlan != "" {
+		// On iteration 1: inject plan anchor and memory context into the last user message.
+		// Only done once — no need to re-inject on subsequent iterations.
+		if iteration == 1 {
 			for j := len(llmMessages) - 1; j >= 0; j-- {
 				if llmMessages[j].Role == models.RoleUser {
-					llmMessages[j].Content += fmt.Sprintf("\n\n[TASK PLAN]\n%s\n[END TASK PLAN]", taskPlan)
-					break
-				}
-			}
-		}
-
-		// Inject memory context into the last user message
-		if len(memories) > 0 {
-			var memText string
-			for _, m := range memories {
-				if m.Score >= 0.5 {
-					memText += fmt.Sprintf("%s\n---\n", m.Content)
-				}
-			}
-			if memText != "" {
-				injection := fmt.Sprintf("\n\n[SYSTEM MEMORY RECALL]\n%s", memText)
-				for j := len(llmMessages) - 1; j >= 0; j-- {
-					if llmMessages[j].Role == models.RoleUser {
-						llmMessages[j].Content += injection
-						break
+					if taskPlan != "" {
+						llmMessages[j].Content += fmt.Sprintf("\n\n[TASK PLAN]\n%s\n[END TASK PLAN]", taskPlan)
 					}
+					if memInjection != "" {
+						llmMessages[j].Content += memInjection
+					}
+					break
 				}
 			}
 		}
@@ -474,4 +469,67 @@ func (o *Orchestrator) getOrCreateConversation(id string) *models.Conversation {
 	conv := models.NewConversation(id)
 	o.conversations[id] = conv
 	return conv
+}
+
+// isComplexRequest returns true when a prompt is likely multi-step or requires
+// deep reasoning. Used to gate the planning step — simple requests skip it.
+func isComplexRequest(prompt string) bool {
+	words := strings.Fields(prompt)
+	if len(words) < complexityThreshold {
+		return false
+	}
+	lower := strings.ToLower(prompt)
+	indicators := []string{
+		"implement", "build", "create", "architect", "refactor", "analyze",
+		"across", "multiple", "design", "strategy", "pipeline", "step",
+		"rewrite", "migrate", "integrate", "optimize", "restructure",
+	}
+	for _, kw := range indicators {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	// Long prompts are usually complex
+	return len(words) > 30
+}
+
+// trimContextMessages applies a sliding window to the message history and
+// truncates oversized tool results. This prevents context overflow and keeps
+// the LLM inference fast as conversations grow.
+func trimContextMessages(messages []models.Message) []models.Message {
+	// First pass: truncate any tool results that are too large
+	for i := range messages {
+		if messages[i].Role == models.RoleTool && len(messages[i].Content) > maxToolResultBytes {
+			messages[i].Content = messages[i].Content[:maxToolResultBytes] +
+				fmt.Sprintf("\n... [TRUNCATED — %d bytes omitted]", len(messages[i].Content)-maxToolResultBytes)
+		}
+	}
+
+	// Second pass: apply sliding window — keep first message + last N
+	if len(messages) <= maxContextMessages {
+		return messages
+	}
+
+	// Always keep the first user message for context anchor, then last window
+	tail := messages[len(messages)-maxContextMessages+1:]
+	return append([]models.Message{messages[0]}, tail...)
+}
+
+// buildMemoryInjection pre-builds the memory injection string once so it
+// doesn't get reconstructed on every loop iteration.
+func buildMemoryInjection(memories []memory.MemoryEntry) string {
+	if len(memories) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, m := range memories {
+		if m.Score >= 0.5 {
+			sb.WriteString(m.Content)
+			sb.WriteString("\n---\n")
+		}
+	}
+	if sb.Len() == 0 {
+		return ""
+	}
+	return "\n\n[SYSTEM MEMORY RECALL]\n" + sb.String()
 }
