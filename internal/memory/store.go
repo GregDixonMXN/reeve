@@ -162,6 +162,17 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("schema migration: %w", err)
 	}
 
+	// ── Column migrations ─────────────────────────────────────────────────────
+	// SQLite's CREATE TABLE IF NOT EXISTS won't add columns to an existing table.
+	// We check PRAGMA table_info and ALTER TABLE for any columns added after the
+	// initial schema was deployed.
+	if err := s.ensureColumn("memories", "source", "TEXT DEFAULT 'conversation'"); err != nil {
+		return fmt.Errorf("column migration (source): %w", err)
+	}
+	if err := s.ensureColumn("memories", "metadata", "TEXT DEFAULT '{}'"); err != nil {
+		return fmt.Errorf("column migration (metadata): %w", err)
+	}
+
 	// Vector table using sqlite-vec's vec0 virtual table
 	vecTable := fmt.Sprintf(`
 	CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
@@ -173,6 +184,39 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("vector table: %w", err)
 	}
 
+	return nil
+}
+
+// ensureColumn adds a column to a table if it doesn't already exist.
+// SQLite doesn't support ALTER TABLE ... ADD COLUMN IF NOT EXISTS until 3.35,
+// so we check PRAGMA table_info manually.
+func (s *Store) ensureColumn(table, column, definition string) error {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dfltVal interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltVal, &pk); err != nil {
+			continue
+		}
+		if name == column {
+			return nil // already exists
+		}
+	}
+
+	// Column missing — add it
+	_, err = s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	if err != nil {
+		return fmt.Errorf("ALTER TABLE %s ADD COLUMN %s: %w", table, column, err)
+	}
+	fmt.Printf("[MEMORY] Migrated: added column %s.%s\n", table, column)
 	return nil
 }
 
@@ -209,9 +253,24 @@ func (s *Store) Store(ctx context.Context, userMsg, assistantMsg string) error {
 // one. The user message is prepended to every chunk as context anchor so each
 // chunk is independently searchable without losing the question it answered.
 func (s *Store) storeChunked(ctx context.Context, userMsg, assistantMsg, full string) error {
-	// Chunk the assistant response (the user message acts as prefix context)
-	prefix := fmt.Sprintf("User: %s\nAssistant (excerpt): ", userMsg)
-	chunks := chunkText(assistantMsg, ChunkSize-len(prefix), ChunkOverlap)
+	// Build a compact prefix from the user message.
+	// Cap it so the prefix never eats into the chunk budget — if the user
+	// message itself is huge, truncate it with an ellipsis.
+	const maxPrefixUserLen = 300
+	userSummary := userMsg
+	if len(userSummary) > maxPrefixUserLen {
+		userSummary = userSummary[:maxPrefixUserLen] + "…"
+	}
+	prefix := fmt.Sprintf("User: %s\nAssistant (excerpt): ", userSummary)
+
+	chunkBudget := ChunkSize - len(prefix)
+	if chunkBudget < 200 {
+		// Prefix is pathologically large — use full ChunkSize with no prefix
+		prefix = "Assistant (excerpt): "
+		chunkBudget = ChunkSize - len(prefix)
+	}
+
+	chunks := chunkText(assistantMsg, chunkBudget, ChunkOverlap)
 
 	// If chunking produced nothing (very short after all), fall back to full
 	if len(chunks) == 0 {
