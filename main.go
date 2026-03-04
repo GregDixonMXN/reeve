@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"log"
 
@@ -17,6 +18,26 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
+
+// memorySearchAdapter wraps memory.Store to satisfy tools.MemorySearcher.
+type memorySearchAdapter struct {
+	store *memory.Store
+}
+
+func (a *memorySearchAdapter) Search(ctx context.Context, query string, limit int) ([]tools.MemoryResult, error) {
+	entries, err := a.store.Search(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]tools.MemoryResult, len(entries))
+	for i, e := range entries {
+		results[i] = tools.MemoryResult{
+			Content: e.Content,
+			Score:   e.Score,
+		}
+	}
+	return results, nil
+}
 
 //go:embed all:frontend/dist
 var assets embed.FS
@@ -129,6 +150,9 @@ func main() {
 	// ── Tools ───────────────────────────────────────────────────────────
 	toolReg := tools.NewRegistry(cfg.Tools, cloudCfg, sandboxCfg)
 	guard := guardrail.New(cfg.Security)
+
+	// Wire memory searcher for search_memory tool
+	toolReg.SetMemory(&memorySearchAdapter{store: mem})
 
 	// ── Mode Manager ────────────────────────────────────────────────────
 	modeManager := orchestrator.NewModeManager(orchestrator.ModeManagerConfig{

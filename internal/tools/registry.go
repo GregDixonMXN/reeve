@@ -18,6 +18,17 @@ import (
 
 type ToolFunc func(ctx context.Context, args map[string]interface{}) (string, error)
 
+// MemorySearcher is the interface for semantic memory search.
+type MemorySearcher interface {
+	Search(ctx context.Context, query string, limit int) ([]MemoryResult, error)
+}
+
+// MemoryResult represents a single memory search result.
+type MemoryResult struct {
+	Content string
+	Score   float64
+}
+
 type staticTool struct {
 	def models.ToolDefinition
 	fn  ToolFunc
@@ -48,6 +59,7 @@ var cacheableTools = map[string]bool{
 	"wolfram":          true,
 	"system_info":      true,
 	"analyze_image":    true,
+	"search_memory":    true,
 }
 
 type Registry struct {
@@ -56,6 +68,7 @@ type Registry struct {
 	dynamic map[string]dynamicTool
 	cloud   *CloudDelegator
 	sandbox *Sandbox
+	mem     MemorySearcher
 
 	// Cloud tool toggle for mode switching
 	mu           sync.RWMutex
@@ -93,6 +106,24 @@ func (r *Registry) SetCloudEnabled(enabled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cloudEnabled = enabled
+}
+
+// SetMemory sets the memory searcher for the search_memory tool.
+func (r *Registry) SetMemory(m MemorySearcher) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mem = m
+	// Register the search_memory tool now that memory is available
+	if m != nil {
+		r.static["search_memory"] = staticTool{
+			def: models.ToolDefinition{
+				Name:        "search_memory",
+				Description: "Search semantic memory for relevant past conversations and stored knowledge",
+				ArgsSchema:  `{"query": "string", "limit": "int (optional, default 5)"}`,
+			},
+			fn: r.searchMemory,
+		}
+	}
 }
 
 func (r *Registry) Definitions() []models.ToolDefinition {
@@ -470,6 +501,32 @@ func (r *Registry) systemInfo(_ context.Context, _ map[string]interface{}) (stri
 	hostname, _ := os.Hostname()
 	return fmt.Sprintf("Hostname: %s\nOS: %s\nArch: %s\nCPUs: %d",
 		hostname, runtime.GOOS, runtime.GOARCH, runtime.NumCPU()), nil
+}
+
+func (r *Registry) searchMemory(ctx context.Context, args map[string]interface{}) (string, error) {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return "", fmt.Errorf("'query' required")
+	}
+	limit := 5
+	if l, ok := args["limit"].(float64); ok {
+		limit = int(l)
+	}
+	if r.mem == nil {
+		return "", fmt.Errorf("memory searcher not configured")
+	}
+	results, err := r.mem.Search(ctx, query, limit)
+	if err != nil {
+		return "", fmt.Errorf("memory search: %w", err)
+	}
+	if len(results) == 0 {
+		return "No relevant memories found.", nil
+	}
+	var sb strings.Builder
+	for _, res := range results {
+		sb.WriteString(fmt.Sprintf("[score=%.2f] %s\n---\n", res.Score, res.Content))
+	}
+	return sb.String(), nil
 }
 
 // ── Dynamic tool execution ──────────────────────────────────────────────────
