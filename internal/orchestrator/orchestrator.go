@@ -59,12 +59,13 @@ type LoopEvent struct {
 type LoopProgressFn func(event LoopEvent)
 
 type Config struct {
-	Logger      *logger.Logger
-	Memory      *memory.Store
-	Cognitive   *cognitive.Engine
-	Tools       *tools.Registry
-	Guardrail   *guardrail.Guard
-	ModeManager *ModeManager
+	Logger            *logger.Logger
+	Memory            *memory.Store
+	Cognitive         *cognitive.Engine
+	Tools             *tools.Registry
+	Guardrail         *guardrail.Guard
+	ModeManager       *ModeManager
+	ReflectionEnabled bool
 }
 
 type Orchestrator struct {
@@ -77,19 +78,21 @@ type Orchestrator struct {
 	guardrail   *guardrail.Guard
 	modeManager *ModeManager
 
-	mu            sync.RWMutex
-	conversations map[string]*models.Conversation
+	mu                sync.RWMutex
+	conversations     map[string]*models.Conversation
+	reflectionEnabled bool
 }
 
 func New(cfg Config) *Orchestrator {
 	return &Orchestrator{
-		log:           cfg.Logger,
-		memory:        cfg.Memory,
-		cognitive:     cfg.Cognitive,
-		tools:         cfg.Tools,
-		guardrail:     cfg.Guardrail,
-		modeManager:   cfg.ModeManager,
-		conversations: make(map[string]*models.Conversation),
+		log:               cfg.Logger,
+		memory:            cfg.Memory,
+		cognitive:         cfg.Cognitive,
+		tools:             cfg.Tools,
+		guardrail:         cfg.Guardrail,
+		modeManager:       cfg.ModeManager,
+		conversations:     make(map[string]*models.Conversation),
+		reflectionEnabled: cfg.ReflectionEnabled,
 	}
 }
 
@@ -201,6 +204,27 @@ func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.
 
 	if finalResponse.Content == "" {
 		finalResponse.Content = "Action completed successfully."
+	}
+
+	// ── REFLECTION: Optional self-critique step ─────────────────────────
+	if o.reflectionEnabled && len(finalResponse.Content) > 200 {
+		reflectionResp, err := o.cognitive.Generate(o.ctx, cognitive.Request{
+			Messages: []models.Message{
+				{Role: models.RoleUser, Content: userMessage},
+				{Role: models.RoleAssistant, Content: finalResponse.Content},
+				{
+					Role: models.RoleUser,
+					Content: `Review your response above. Is it accurate, complete, and helpful?
+If yes, respond with only: LGTM
+If no, provide an improved response.`,
+				},
+			},
+			Tools: nil, // No tools during reflection
+		})
+		if err == nil && reflectionResp != nil && !strings.Contains(reflectionResp.Content, "LGTM") {
+			o.log.Info("Reflection improved response")
+			finalResponse.Content = reflectionResp.Content
+		}
 	}
 
 	// ── PERSIST: Store exchange in long-term memory ─────────────────────

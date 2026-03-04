@@ -178,12 +178,13 @@ func main() {
 
 	// ── Orchestrator ────────────────────────────────────────────────────
 	orch := orchestrator.New(orchestrator.Config{
-		Logger:      appLog,
-		Memory:      mem,
-		Cognitive:   engine,
-		Tools:       toolReg,
-		Guardrail:   guard,
-		ModeManager: modeManager,
+		Logger:            appLog,
+		Memory:            mem,
+		Cognitive:         engine,
+		Tools:             toolReg,
+		Guardrail:         guard,
+		ModeManager:       modeManager,
+		ReflectionEnabled: cfg.Reflection.Enabled,
 	})
 
 	// ── Wails App ───────────────────────────────────────────────────────

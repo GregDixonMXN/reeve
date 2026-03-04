@@ -8,13 +8,18 @@ import (
 )
 
 type AppConfig struct {
-	LogLevel  string          `toml:"log_level"`
-	Database  DatabaseConfig  `toml:"database"`
-	Model     ModelConfig     `toml:"model"`
-	Embedding EmbeddingConfig `toml:"embedding"`
-	Cloud     CloudConfig     `toml:"cloud"`
-	Tools     ToolsConfig     `toml:"tools"`
-	Security  SecurityConfig  `toml:"security"`
+	LogLevel   string           `toml:"log_level"`
+	Database   DatabaseConfig   `toml:"database"`
+	Model      ModelConfig      `toml:"model"`
+	Embedding  EmbeddingConfig  `toml:"embedding"`
+	Cloud      CloudConfig      `toml:"cloud"`
+	Tools      ToolsConfig      `toml:"tools"`
+	Security   SecurityConfig   `toml:"security"`
+	Reflection ReflectionConfig `toml:"reflection"`
+}
+
+type ReflectionConfig struct {
+	Enabled bool `toml:"enabled"`
 }
 
 type DatabaseConfig struct {
