@@ -128,7 +128,12 @@ func (s *Store) WipeAll() error {
 		return fmt.Errorf("failed to clear memories: %w", err)
 	}
 
-	// 3. Clear conversations history if desired (optional, keeping it clean here)
+	// 3. Clear conversation messages first (no FK cascade in schema — must delete explicitly)
+	if _, err := tx.Exec("DELETE FROM conversation_messages"); err != nil {
+		return fmt.Errorf("failed to clear conversation messages: %w", err)
+	}
+
+	// 4. Clear conversations table
 	if _, err := tx.Exec("DELETE FROM conversations"); err != nil {
 		return fmt.Errorf("failed to clear conversations: %w", err)
 	}

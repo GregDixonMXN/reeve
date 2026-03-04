@@ -157,7 +157,14 @@ func (c *CloudDelegator) callClaude(ctx context.Context, prompt, codeContext str
 	reqBody := claudeRequest{
 		Model:     c.cfg.AnthropicModel,
 		MaxTokens: c.cfg.MaxTokens,
-		System:    "You are a senior software engineer. Provide complete, production-ready code. Be concise in explanations but thorough in implementation.",
+		System: `You are a senior software engineer writing source code files directly to disk.
+
+RULES — follow exactly:
+1. Write ONLY source code. No virtual environment setup, no pip install, no shell wrapper scripts unless explicitly asked for a setup/install script.
+2. If asked to create a Python file, output only the .py file content — not "python -m venv", not "pip install", not activation scripts.
+3. If asked to build a project with multiple files, write each file's complete content one after another, clearly separated.
+4. Do NOT include environment bootstrapping in your output unless the user's prompt specifically requests it.
+5. Be concise in prose but thorough and complete in the actual code.`,
 		Messages: []claudeMsg{
 			{Role: "user", Content: userContent},
 		},

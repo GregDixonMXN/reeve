@@ -388,10 +388,12 @@ Use this to run code, build projects, run tests. If code fails, read the error, 
 		r.static["ask_cloud_model"] = staticTool{
 			def: models.ToolDefinition{
 				Name: "ask_cloud_model",
-				Description: `Delegate complex tasks to Claude or Gemini. Use 'claude' for coding, 'gemini' for large documents.
-IMPORTANT: For large code generation, provide 'output_path' to write the response directly to disk.
-This bypasses the context window — you'll get a summary like "[SUCCESS] Written to /path (412 lines)".`,
-				ArgsSchema: `{"provider": "string (claude|gemini)", "prompt": "string", "context": "string (optional)", "output_path": "string (optional, write response to this file)"}`,
+				Description: `Delegate code generation or complex reasoning to Claude or Gemini.
+MANDATORY: For ANY code generation task, you MUST provide 'output_path' — the exact file path to write the result to (e.g. /home/shki/projects/myapp/main.py).
+If you omit output_path on a code task, the call will fail.
+Use 'claude' for coding/reasoning, 'gemini' for large documents.
+Returns: "[SUCCESS] Written to <path> (N lines)" — do NOT ask Claude to repeat the code, just verify with execute_code.`,
+				ArgsSchema: `{"provider": "string (claude|gemini)", "prompt": "string", "context": "string (optional)", "output_path": "string (REQUIRED for code generation — exact file path on disk)"}`,
 			},
 			fn: r.askCloudModel,
 		}
@@ -438,6 +440,13 @@ func (r *Registry) analyzeImage(ctx context.Context, args map[string]interface{}
 
 // ── ask_cloud_model with workspace bypass ───────────────────────────────────
 
+// codeKeywords are phrases that signal a code-generation intent.
+// When any are present in the prompt and output_path is missing, we reject the call.
+var codeKeywords = []string{
+	"write", "create", "build", "implement", "generate", "code", "function",
+	"class", "script", "file", "module", "program", "app", "refactor", "fix",
+}
+
 func (r *Registry) askCloudModel(ctx context.Context, args map[string]interface{}) (string, error) {
 	provider, _ := args["provider"].(string)
 	prompt, _ := args["prompt"].(string)
@@ -449,6 +458,22 @@ func (r *Registry) askCloudModel(ctx context.Context, args map[string]interface{
 	}
 	if prompt == "" {
 		return "", fmt.Errorf("'prompt' required")
+	}
+
+	// Enforce output_path for code-generation calls.
+	// If the prompt looks like a coding task and no output_path was given, fail fast
+	// so the local LLM is forced to provide a real file path on its next attempt.
+	if outputPath == "" {
+		lower := strings.ToLower(prompt)
+		for _, kw := range codeKeywords {
+			if strings.Contains(lower, kw) {
+				return "", fmt.Errorf(
+					"output_path is required for code tasks — retry this call with " +
+						"\"output_path\": \"/home/shki/projects/<project>/<filename>\" " +
+						"so the result is written directly to disk",
+				)
+			}
+		}
 	}
 
 	// Validate output_path is in allowed directories
