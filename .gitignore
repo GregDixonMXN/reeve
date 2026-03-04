@@ -1,0 +1,8 @@
+build/
+frontend/dist/
+frontend/node_modules/
+axiom.toml
+axiom_memory.db
+*.db-journal
+*.db-wal
+.venv/

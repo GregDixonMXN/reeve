@@ -18,7 +18,7 @@ temperature    = 0.6                         # Lower slightly for DeepSeek codin
 top_p          = 0.9
 runner_type    = "ollama"                    # "ollama" | "openai"
 runner_url     = "http://localhost:11434"    # Ollama default port
-runner_model   = "qwen2.5-coder:32b"          # Upgraded — fallback to qwen2.5-coder:7b if VRAM is insufficient
+runner_model   = "qwen2.5-coder:7b"           # The new Qwen-based sovereign brain
 runner_timeout = 300                         # CRITICAL: Increase timeout to 5 minutes
 enable_streaming = true
 
@@ -33,9 +33,9 @@ dim      = 768                                # nomic-embed-text = 768, all-mini
 
 [cloud]
 anthropic_key   = "***REMOVED***"                          # https://console.anthropic.com
-anthropic_model = "claude-sonnet-4-5"
+anthropic_model = "claude-sonnet-4-6"
 gemini_key      = "AIzaSyD6BMNVXaa_R4QmLBO_OwlvDTlHA3YY0Dk"                          # https://aistudio.google.com
-gemini_model    = "gemini-2.0-flash"
+gemini_model    = "gemini-3-pro"
 max_tokens      = 16000
 timeout_sec     = 600
 

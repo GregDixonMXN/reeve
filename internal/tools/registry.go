@@ -194,6 +194,15 @@ func (r *Registry) registerBuiltins() {
 		fn: r.writeFile,
 	}
 
+	r.static["edit_file"] = staticTool{
+		def: models.ToolDefinition{
+			Name:        "edit_file",
+			Description: "Replace the first occurrence of old_text with new_text in a file",
+			ArgsSchema:  `{"path": "string", "old_text": "string", "new_text": "string"}`,
+		},
+		fn: r.editFile,
+	}
+
 	r.static["list_dir"] = staticTool{
 		def: models.ToolDefinition{
 			Name:        "list_dir",
@@ -406,6 +415,32 @@ func (r *Registry) writeFile(_ context.Context, args map[string]interface{}) (st
 	// Invalidate cache — file contents have changed
 	r.InvalidateCache()
 	return fmt.Sprintf("Wrote %d bytes to %s", len(content), path), nil
+}
+
+func (r *Registry) editFile(_ context.Context, args map[string]interface{}) (string, error) {
+	path, _ := args["path"].(string)
+	oldText, _ := args["old_text"].(string)
+	newText, _ := args["new_text"].(string)
+	if path == "" || oldText == "" {
+		return "", fmt.Errorf("'path' and 'old_text' required")
+	}
+	if !r.isAllowed(path) {
+		return "", fmt.Errorf("'%s' outside allowed directories", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	content := string(data)
+	if !strings.Contains(content, oldText) {
+		return "", fmt.Errorf("old_text not found in file")
+	}
+	newContent := strings.Replace(content, oldText, newText, 1)
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		return "", err
+	}
+	r.InvalidateCache()
+	return fmt.Sprintf("Edited %s: replaced %d bytes with %d bytes", path, len(oldText), len(newText)), nil
 }
 
 func (r *Registry) listDir(_ context.Context, args map[string]interface{}) (string, error) {
