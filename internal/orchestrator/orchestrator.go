@@ -16,7 +16,7 @@ import (
 	"axiom/pkg/models"
 )
 
-const MaxToolIterations = 10
+const MaxToolIterations = 25
 
 // TaskCompleteToken is the sentinel the LLM emits to break the agent loop early.
 const TaskCompleteToken = "<TASK_COMPLETE>"
@@ -28,7 +28,10 @@ const maxContextMessages = 40
 
 // maxToolResultBytes is the max size of a single tool result injected into
 // the context. Larger results are truncated with a notice.
-const maxToolResultBytes = 3000
+// NOTE: ask_cloud_model results are exempt — they use a higher limit so generated
+// code is never silently truncated before the LLM can act on it.
+const maxToolResultBytes = 8000
+const maxCloudToolResultBytes = 32000
 
 // complexityThreshold is the minimum word count before planning is attempted.
 const complexityThreshold = 10
@@ -562,11 +565,20 @@ func isComplexRequest(prompt string) bool {
 // truncates oversized tool results. This prevents context overflow and keeps
 // the LLM inference fast as conversations grow.
 func trimContextMessages(messages []models.Message) []models.Message {
-	// First pass: truncate any tool results that are too large
+	// First pass: truncate any tool results that are too large.
+	// Cloud delegation results get a much higher ceiling — truncating generated code
+	// causes the LLM to output it as text instead of calling write_file.
 	for i := range messages {
-		if messages[i].Role == models.RoleTool && len(messages[i].Content) > maxToolResultBytes {
-			messages[i].Content = messages[i].Content[:maxToolResultBytes] +
-				fmt.Sprintf("\n... [TRUNCATED — %d bytes omitted]", len(messages[i].Content)-maxToolResultBytes)
+		if messages[i].Role != models.RoleTool {
+			continue
+		}
+		limit := maxToolResultBytes
+		if strings.Contains(messages[i].Content, "[SUCCESS]") || strings.Contains(messages[i].Content, "ask_cloud_model") {
+			limit = maxCloudToolResultBytes
+		}
+		if len(messages[i].Content) > limit {
+			messages[i].Content = messages[i].Content[:limit] +
+				fmt.Sprintf("\n... [TRUNCATED — %d bytes omitted]", len(messages[i].Content)-limit)
 		}
 	}
 
