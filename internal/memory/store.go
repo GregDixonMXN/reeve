@@ -197,6 +197,17 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("column migration (metadata): %w", err)
 	}
 
+	// Decay scoring columns
+	if err := s.ensureColumn("memories", "importance", "REAL DEFAULT 1.0"); err != nil {
+		return fmt.Errorf("column migration (importance): %w", err)
+	}
+	if err := s.ensureColumn("memories", "access_count", "INTEGER DEFAULT 0"); err != nil {
+		return fmt.Errorf("column migration (access_count): %w", err)
+	}
+	if err := s.ensureColumn("memories", "last_accessed", "DATETIME"); err != nil {
+		return fmt.Errorf("column migration (last_accessed): %w", err)
+	}
+
 	// Vector table using sqlite-vec's vec0 virtual table
 	vecTable := fmt.Sprintf(`
 	CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
@@ -541,17 +552,58 @@ func (s *Store) vectorSearch(queryVec []float32, topK int) ([]MemoryEntry, error
 	defer rows.Close()
 
 	var results []MemoryEntry
+	var ids []int64
+	now := time.Now()
 	for rows.Next() {
 		var e MemoryEntry
 		var distance float64
 		if err := rows.Scan(&e.ID, &e.Content, &e.Metadata, &e.CreatedAt, &distance); err != nil {
 			continue
 		}
-		e.Score = 1.0 / (1.0 + distance)
+		// Base score from vector distance
+		baseScore := 1.0 / (1.0 + distance)
+
+		// Apply decay: adjustedScore = score * (0.7 + 0.3 * (1.0 / (1.0 + daysSinceCreated * 0.1)))
+		daysSinceCreated := now.Sub(e.CreatedAt).Hours() / 24.0
+		decayFactor := 0.7 + 0.3*(1.0/(1.0+daysSinceCreated*0.1))
+		e.Score = baseScore * decayFactor
+
 		results = append(results, e)
+		ids = append(ids, e.ID)
+	}
+
+	// Fire background goroutine to update access tracking
+	if len(ids) > 0 {
+		go s.updateAccessTracking(ids)
 	}
 
 	return results, nil
+}
+
+// updateAccessTracking increments access_count and updates last_accessed for retrieved memories.
+func (s *Store) updateAccessTracking(ids []int64) {
+	if len(ids) == 0 {
+		return
+	}
+
+	// Build placeholders for IN clause
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE memories
+		SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP
+		WHERE id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	_, err := s.db.Exec(query, args...)
+	if err != nil {
+		fmt.Printf("[MEMORY] Failed to update access tracking: %v\n", err)
+	}
 }
 
 func (s *Store) textSearch(query string, topK int) ([]MemoryEntry, error) {
