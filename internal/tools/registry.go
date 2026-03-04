@@ -286,6 +286,16 @@ Use this to run code, build projects, run tests. If code fails, read the error, 
 		script:  "scripts/web_scrape.py",
 	}
 
+	r.dynamic["git_ops"] = dynamicTool{
+		def: models.ToolDefinition{
+			Name:        "git_ops",
+			Description: "Run git operations in a project directory. Actions: status, diff, log, add, commit, push, branch, checkout",
+			ArgsSchema:  `{"action": "string (status|diff|log|add|commit|push|branch|checkout)", "args": "string (optional)", "cwd": "string (project directory)"}`,
+		},
+		runtime: "python",
+		script:  "scripts/git_ops.py",
+	}
+
 	// ── Wolfram Oracle ──────────────────────────────────────────────────
 	if r.cfg.WolframAppID != "" {
 		r.dynamic["wolfram"] = dynamicTool{
