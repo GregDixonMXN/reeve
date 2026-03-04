@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"axiom/internal/config"
+	"axiom/internal/guardrail"
 	"axiom/pkg/models"
 )
 
@@ -85,6 +86,7 @@ type Registry struct {
 	cloud   *CloudDelegator
 	sandbox *Sandbox
 	mem     MemorySearcher
+	guard   *guardrail.Guard
 
 	// Cloud tool toggle for mode switching
 	mu           sync.RWMutex
@@ -139,6 +141,21 @@ func (r *Registry) SetMemory(m MemorySearcher) {
 			},
 			fn: r.searchMemory,
 		}
+		// Register schema with guardrail if available
+		if r.guard != nil {
+			r.guard.RegisterSchema("search_memory", `{"query": "string", "limit": "int (optional, default 5)"}`)
+		}
+	}
+}
+
+// SetGuardrail sets the guardrail for schema validation.
+func (r *Registry) SetGuardrail(g *guardrail.Guard) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.guard = g
+	// Register schemas for all static tools
+	for name, tool := range r.static {
+		g.RegisterSchema(name, tool.def.ArgsSchema)
 	}
 }
 

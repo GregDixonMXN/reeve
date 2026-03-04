@@ -157,6 +157,9 @@ func main() {
 	// Wire memory searcher for search_memory tool
 	toolReg.SetMemory(&memorySearchAdapter{store: mem})
 
+	// Wire guardrail for schema validation
+	toolReg.SetGuardrail(guard)
+
 	// ── Mode Manager ────────────────────────────────────────────────────
 	modeManager := orchestrator.NewModeManager(orchestrator.ModeManagerConfig{
 		Engine:        engine,
