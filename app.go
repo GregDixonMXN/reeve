@@ -135,7 +135,7 @@ func (a *App) RunAgentLoop(conversationID, message string) (map[string]interface
 // ── Streaming ───────────────────────────────────────────────────────────────
 
 func (a *App) EmitToken(token string) {
-	runtime.EventsEmit(a.ctx, "axiom:token", token)
+	runtime.EventsEmit(a.ctx, "axiom:token", map[string]string{"token": token})
 }
 
 // ── Memory Management ───────────────────────────────────────────────────────

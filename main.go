@@ -75,7 +75,8 @@ func main() {
 
 	// ── Local Runner (Ollama) ───────────────────────────────────────────
 	var localRunner cognitive.LLMRunner
-	if cfg.Model.EnableStreaming {
+	if cfg.Model.EnableStreaming && cfg.Model.RunnerType == "ollama" {
+		// StreamingRunner for live token output when streaming is enabled for Ollama
 		localRunner = adapters.NewStreamingRunner(adapters.StreamingRunnerConfig{
 			BaseURL:  cfg.Model.RunnerURL,
 			Model:    cfg.Model.RunnerModel,
@@ -87,7 +88,9 @@ func main() {
 				}
 			},
 		})
+		appLog.Info("Streaming: enabled for live token output")
 	} else {
+		// Non-streaming fallback
 		switch cfg.Model.RunnerType {
 		case "openai":
 			localRunner = adapters.NewRemoteRunner(adapters.RemoteRunnerConfig{
