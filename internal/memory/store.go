@@ -37,6 +37,20 @@ type MemoryEntry struct {
 	CreatedAt time.Time
 }
 
+// ConversationMessage represents a single message in a conversation.
+type ConversationMessage struct {
+	Role      string
+	Content   string
+	Timestamp time.Time
+}
+
+// ConversationSummary provides a brief overview of a conversation.
+type ConversationSummary struct {
+	ID           string
+	MessageCount int
+	LastActivity time.Time
+}
+
 // Store manages Axiom's semantic memory:
 //   - Short-term: in-process conversation state (owned by Orchestrator)
 //   - Long-term: SQLite + sqlite-vec for vector KNN search
@@ -142,11 +156,16 @@ func (s *Store) migrate() error {
 	);
 
 	CREATE TABLE IF NOT EXISTS conversations (
-		id          TEXT PRIMARY KEY,
-		title       TEXT DEFAULT 'Untitled',
-		messages    TEXT DEFAULT '[]',
-		created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		id             TEXT PRIMARY KEY,
+		last_activity  DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS conversation_messages (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		conv_id    TEXT NOT NULL,
+		role       TEXT NOT NULL,
+		content    TEXT NOT NULL,
+		timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE TABLE IF NOT EXISTS projects (
@@ -160,6 +179,11 @@ func (s *Store) migrate() error {
 
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("schema migration: %w", err)
+	}
+
+	// Ensure conversations table has last_activity column (migration for existing DBs)
+	if err := s.ensureColumn("conversations", "last_activity", "DATETIME DEFAULT CURRENT_TIMESTAMP"); err != nil {
+		return fmt.Errorf("column migration (last_activity): %w", err)
 	}
 
 	// ── Column migrations ─────────────────────────────────────────────────────
@@ -567,4 +591,100 @@ func (s *Store) VectorCount() (int, error) {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM memory_vec").Scan(&count)
 	return count, err
+}
+
+// ─── Conversation Persistence ───────────────────────────────────────────────
+
+// SaveConversation persists a conversation's messages to SQLite.
+func (s *Store) SaveConversation(ctx context.Context, id string, messages []ConversationMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Upsert conversation record
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO conversations (id, last_activity) VALUES (?, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET last_activity = CURRENT_TIMESTAMP
+	`, id)
+	if err != nil {
+		return fmt.Errorf("upsert conversation: %w", err)
+	}
+
+	// Clear existing messages and insert fresh
+	_, err = tx.ExecContext(ctx, "DELETE FROM conversation_messages WHERE conv_id = ?", id)
+	if err != nil {
+		return fmt.Errorf("clear messages: %w", err)
+	}
+
+	for _, msg := range messages {
+		_, err = tx.ExecContext(ctx,
+			"INSERT INTO conversation_messages (conv_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+			id, msg.Role, msg.Content, msg.Timestamp,
+		)
+		if err != nil {
+			return fmt.Errorf("insert message: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// LoadConversation retrieves a conversation's messages from SQLite.
+func (s *Store) LoadConversation(ctx context.Context, id string) ([]ConversationMessage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role, content, timestamp
+		FROM conversation_messages
+		WHERE conv_id = ?
+		ORDER BY id ASC
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []ConversationMessage
+	for rows.Next() {
+		var msg ConversationMessage
+		if err := rows.Scan(&msg.Role, &msg.Content, &msg.Timestamp); err != nil {
+			continue
+		}
+		messages = append(messages, msg)
+	}
+	return messages, nil
+}
+
+// ListConversations returns summaries of all stored conversations.
+func (s *Store) ListConversations(ctx context.Context) ([]ConversationSummary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id, c.last_activity, COUNT(m.id) as msg_count
+		FROM conversations c
+		LEFT JOIN conversation_messages m ON c.id = m.conv_id
+		GROUP BY c.id
+		ORDER BY c.last_activity DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []ConversationSummary
+	for rows.Next() {
+		var s ConversationSummary
+		if err := rows.Scan(&s.ID, &s.LastActivity, &s.MessageCount); err != nil {
+			continue
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, nil
 }

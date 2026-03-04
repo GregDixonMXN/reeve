@@ -209,6 +209,9 @@ func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.
 		o.log.Warn("Memory persist failed: %v", err)
 	}
 
+	// Persist conversation to SQLite
+	o.saveConversation(conversationID, conv)
+
 	elapsed := time.Since(start)
 	o.log.Info("Response in %s | %d memories recalled", elapsed, len(memories))
 
@@ -415,6 +418,9 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 		}
 	}
 
+	// Persist conversation to SQLite
+	o.saveConversation(conversationID, conv)
+
 	elapsed := time.Since(start)
 	o.log.Info("AgentLoop: %d iterations, %d tools, %s elapsed", iteration-1, len(toolsUsed), elapsed)
 
@@ -466,9 +472,44 @@ func (o *Orchestrator) getOrCreateConversation(id string) *models.Conversation {
 	if conv, ok := o.conversations[id]; ok {
 		return conv
 	}
+
+	// Try loading from persistent storage
+	stored, err := o.memory.LoadConversation(o.ctx, id)
+	if err == nil && len(stored) > 0 {
+		conv := models.NewConversation(id)
+		for _, msg := range stored {
+			conv.Messages = append(conv.Messages, models.Message{
+				Role:      msg.Role,
+				Content:   msg.Content,
+				Timestamp: msg.Timestamp,
+			})
+		}
+		if len(conv.Messages) > 0 {
+			conv.LastActivity = conv.Messages[len(conv.Messages)-1].Timestamp
+		}
+		o.conversations[id] = conv
+		o.log.Debug("Loaded conversation %s from storage (%d messages)", id, len(stored))
+		return conv
+	}
+
 	conv := models.NewConversation(id)
 	o.conversations[id] = conv
 	return conv
+}
+
+// saveConversation persists the conversation to SQLite.
+func (o *Orchestrator) saveConversation(id string, conv *models.Conversation) {
+	messages := make([]memory.ConversationMessage, len(conv.Messages))
+	for i, msg := range conv.Messages {
+		messages[i] = memory.ConversationMessage{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Timestamp: msg.Timestamp,
+		}
+	}
+	if err := o.memory.SaveConversation(o.ctx, id, messages); err != nil {
+		o.log.Warn("Failed to persist conversation %s: %v", id, err)
+	}
 }
 
 // isComplexRequest returns true when a prompt is likely multi-step or requires
