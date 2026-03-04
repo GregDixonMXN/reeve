@@ -62,6 +62,22 @@ var cacheableTools = map[string]bool{
 	"search_memory":    true,
 }
 
+// parallelSafeTools lists tools that are safe to execute concurrently.
+// These are read-only tools that don't have side effects.
+var parallelSafeTools = map[string]bool{
+	"read_file":     true,
+	"list_dir":      true,
+	"system_info":   true,
+	"search_memory": true,
+}
+
+// ToolResult holds the result of a parallel tool execution.
+type ToolResult struct {
+	Name   string
+	Result string
+	Err    error
+}
+
 type Registry struct {
 	cfg     config.ToolsConfig
 	static  map[string]staticTool
@@ -201,6 +217,35 @@ func (r *Registry) InvalidateCache() {
 	r.cacheMu.Lock()
 	r.cache = make(map[string]toolCacheEntry)
 	r.cacheMu.Unlock()
+}
+
+// ExecuteParallel runs multiple tool calls concurrently for safe tools.
+// Non-safe tools are executed sequentially. Results are returned in the same order as calls.
+func (r *Registry) ExecuteParallel(ctx context.Context, calls []*models.ToolCall) []ToolResult {
+	results := make([]ToolResult, len(calls))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for i, call := range calls {
+		if parallelSafeTools[call.Name] {
+			// Safe to execute in parallel
+			wg.Add(1)
+			go func(idx int, c *models.ToolCall) {
+				defer wg.Done()
+				result, err := r.Execute(ctx, c)
+				mu.Lock()
+				results[idx] = ToolResult{Name: c.Name, Result: result, Err: err}
+				mu.Unlock()
+			}(i, call)
+		} else {
+			// Execute sequentially for unsafe tools
+			result, err := r.Execute(ctx, call)
+			results[i] = ToolResult{Name: call.Name, Result: result, Err: err}
+		}
+	}
+
+	wg.Wait()
+	return results
 }
 
 // ── Registration ────────────────────────────────────────────────────────────
