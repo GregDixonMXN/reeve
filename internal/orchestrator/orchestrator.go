@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +18,16 @@ import (
 	"axiom/pkg/models"
 )
 
-const MaxToolIterations = 25
+// MaxToolIterationsLocal is the agent loop ceiling for local and hybrid modes.
+const MaxToolIterationsLocal = 25
+
+// MaxToolIterationsCloud is the agent loop ceiling for cloud mode.
+// Claude is better at staying on task through long sequences and the higher
+// latency of cloud inference means we're already paying the cost — give it room.
+const MaxToolIterationsCloud = 50
+
+// Deprecated: use MaxToolIterationsLocal or MaxToolIterationsCloud.
+const MaxToolIterations = MaxToolIterationsLocal
 
 // TaskCompleteToken is the sentinel the LLM emits to break the agent loop early.
 const TaskCompleteToken = "<TASK_COMPLETE>"
@@ -28,9 +39,10 @@ const maxContextMessages = 40
 
 // maxToolResultBytes is the max size of a single tool result injected into
 // the context. Larger results are truncated with a notice.
-// NOTE: ask_cloud_model results are exempt — they use a higher limit so generated
-// code is never silently truncated before the LLM can act on it.
 const maxToolResultBytes = 8000
+
+// maxCloudToolResultBytes is the limit for ask_cloud_model and execute_code
+// results — build output and stack traces need room to be fully readable.
 const maxCloudToolResultBytes = 32000
 
 // complexityThreshold is the minimum word count before planning is attempted.
@@ -69,6 +81,7 @@ type Config struct {
 	Guardrail         *guardrail.Guard
 	ModeManager       *ModeManager
 	ReflectionEnabled bool
+	WorkspaceDirs     []string // allowed dirs — used for project context loading
 }
 
 type Orchestrator struct {
@@ -84,6 +97,7 @@ type Orchestrator struct {
 	mu                sync.RWMutex
 	conversations     map[string]*models.Conversation
 	reflectionEnabled bool
+	workspaceDirs     []string
 }
 
 func New(cfg Config) *Orchestrator {
@@ -96,6 +110,7 @@ func New(cfg Config) *Orchestrator {
 		modeManager:       cfg.ModeManager,
 		conversations:     make(map[string]*models.Conversation),
 		reflectionEnabled: cfg.ReflectionEnabled,
+		workspaceDirs:     cfg.WorkspaceDirs,
 	}
 }
 
@@ -282,23 +297,40 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 	// Pre-build memory injection string once — used in iteration 1 only
 	memInjection := buildMemoryInjection(memories)
 
+	// ── Project context loading ───────────────────────────────────────────
+	// Scan workspace dirs for context files relevant to this prompt and inject
+	// them once on iteration 1. Gives the LLM the same "lay of the land" a
+	// human engineer would have before touching a project.
+	projectContext := o.loadProjectContext(userPrompt)
+	if projectContext != "" {
+		o.log.Info("Project context loaded (%d bytes)", len(projectContext))
+	}
+
 	// ── Planning step (complex tasks only) ───────────────────────────────
 	// Only run a planning inference when the request is clearly multi-step.
 	// Simple requests skip this to save a full LLM round-trip.
 	var taskPlan string
 	if isComplexRequest(userPrompt) {
 		emit(LoopEvent{Kind: LoopEventThinking, Iteration: 0, Message: "Planning task..."})
+
+		// For multi-file projects, require a full file manifest before acting.
+		// This forces the LLM to think about the complete structure up front and
+		// prevents the premature-execution spiral that burns 15 iterations.
+		planPrompt := fmt.Sprintf(
+			"Before acting, produce a complete FILE MANIFEST for this task. "+
+				"List EVERY file you will create or modify, with its exact path and one-line description. "+
+				"Then list the steps in order. Be specific — paths must be absolute.\n\nTASK: %s", userPrompt)
+
+		if projectContext != "" {
+			planPrompt += projectContext
+		}
+
 		planResp, planErr := o.cognitive.Generate(o.ctx, cognitive.Request{
 			Messages: []models.Message{
-				{
-					Role: models.RoleUser,
-					Content: fmt.Sprintf(
-						"Before acting, briefly outline your plan to complete the following task. "+
-							"List 1-3 concrete steps only. Be concise.\n\nTASK: %s", userPrompt),
-				},
+				{Role: models.RoleUser, Content: planPrompt},
 			},
 			MemoryContext: memories,
-			Tools:         nil, // no tools during planning — think only
+			Tools:         nil, // think only — no tools during planning
 		})
 		if planErr != nil {
 			o.log.Warn("Planning step failed (non-fatal): %v", planErr)
@@ -309,18 +341,22 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 		}
 	}
 
+	// Mode-aware iteration ceiling: cloud mode gets more room
+	maxIter := o.maxIterations()
+
 	var (
 		finalContent   string
 		finalReasoning string
 		toolsUsed      []string
 		iteration      int
+		lastToolResult string // tracked for error recovery injection
 	)
 
-	for iteration = 1; iteration <= MaxToolIterations; iteration++ {
+	for iteration = 1; iteration <= maxIter; iteration++ {
 		emit(LoopEvent{
 			Kind:      LoopEventThinking,
 			Iteration: iteration,
-			Message:   fmt.Sprintf("Iteration %d/%d — asking LLM", iteration, MaxToolIterations),
+			Message:   fmt.Sprintf("Iteration %d/%d — asking LLM", iteration, maxIter),
 		})
 
 		// Snapshot + trim context window to prevent overflow on long conversations
@@ -328,18 +364,33 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 		copy(rawMsgs, conv.Messages)
 		llmMessages := trimContextMessages(rawMsgs)
 
-		// On iteration 1: inject plan anchor and memory context into the last user message.
-		// Only done once — no need to re-inject on subsequent iterations.
+		// On iteration 1: inject plan, project context, and memory into the last user message.
 		if iteration == 1 {
 			for j := len(llmMessages) - 1; j >= 0; j-- {
 				if llmMessages[j].Role == models.RoleUser {
 					if taskPlan != "" {
-						llmMessages[j].Content += fmt.Sprintf("\n\n[TASK PLAN]\n%s\n[END TASK PLAN]", taskPlan)
+						llmMessages[j].Content += fmt.Sprintf("\n\n[TASK PLAN — EXECUTE THIS EXACTLY]\n%s\n[END TASK PLAN]", taskPlan)
+					}
+					if projectContext != "" {
+						llmMessages[j].Content += projectContext
 					}
 					if memInjection != "" {
 						llmMessages[j].Content += memInjection
 					}
 					break
+				}
+			}
+		}
+
+		// On subsequent iterations: if the last tool result was an error, inject
+		// a targeted recovery instruction to steer toward surgical fixes.
+		if iteration > 1 && lastToolResult != "" {
+			if recovery := errorRecoveryInjection(lastToolResult); recovery != "" {
+				for j := len(llmMessages) - 1; j >= 0; j-- {
+					if llmMessages[j].Role == models.RoleTool {
+						llmMessages[j].Content += recovery
+						break
+					}
 				}
 			}
 		}
@@ -359,21 +410,12 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 			finalContent = resp.Content
 			finalReasoning = resp.Reasoning
 
-			// Check for explicit completion sentinel
 			if strings.Contains(finalContent, TaskCompleteToken) {
 				finalContent = strings.ReplaceAll(finalContent, TaskCompleteToken, "")
 				finalContent = strings.TrimSpace(finalContent)
-				emit(LoopEvent{
-					Kind:      LoopEventDone,
-					Iteration: iteration,
-					Message:   "Task complete — LLM signalled <TASK_COMPLETE>",
-				})
+				emit(LoopEvent{Kind: LoopEventDone, Iteration: iteration, Message: "Task complete — LLM signalled <TASK_COMPLETE>"})
 			} else {
-				emit(LoopEvent{
-					Kind:      LoopEventDone,
-					Iteration: iteration,
-					Message:   "Task complete — no further tool calls",
-				})
+				emit(LoopEvent{Kind: LoopEventDone, Iteration: iteration, Message: "Task complete — no further tool calls"})
 			}
 			break
 		}
@@ -403,6 +445,7 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 			o.log.Warn("Guardrail blocked %s: %v", toolName, err)
 			blocked := fmt.Sprintf("[BLOCKED] %s: %s", toolName, err)
 			conv.AddMessage(models.RoleTool, blocked)
+			lastToolResult = blocked
 			emit(LoopEvent{Kind: LoopEventBlocked, Iteration: iteration, ToolName: toolName, Message: blocked})
 			continue
 		}
@@ -412,12 +455,14 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 		if err != nil {
 			errMsg := fmt.Sprintf("[ERROR] %s: %s", toolName, err)
 			conv.AddMessage(models.RoleTool, errMsg)
+			lastToolResult = errMsg
 			emit(LoopEvent{Kind: LoopEventToolResult, Iteration: iteration, ToolName: toolName, Message: errMsg})
 			continue
 		}
 
 		toolResult := fmt.Sprintf("[TOOL RESULT]\n%s\n[END TOOL RESULT]", result)
 		conv.AddMessage(models.RoleTool, toolResult)
+		lastToolResult = toolResult
 		emit(LoopEvent{
 			Kind:      LoopEventToolResult,
 			Iteration: iteration,
@@ -427,12 +472,12 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 	}
 
 	// ── Hit the ceiling ──────────────────────────────────────────────────
-	if iteration > MaxToolIterations && finalContent == "" {
+	if iteration > maxIter && finalContent == "" {
 		finalContent = fmt.Sprintf("Agent loop reached the %d-iteration safety limit. The task may be partially complete. Tools used: %s",
-			MaxToolIterations, strings.Join(toolsUsed, ", "))
+			maxIter, strings.Join(toolsUsed, ", "))
 		emit(LoopEvent{
 			Kind:      LoopEventMaxIter,
-			Iteration: MaxToolIterations,
+			Iteration: maxIter,
 			Message:   finalContent,
 		})
 	}
@@ -539,6 +584,98 @@ func (o *Orchestrator) saveConversation(id string, conv *models.Conversation) {
 	}
 }
 
+// maxIterations returns the agent loop ceiling for the current mode.
+func (o *Orchestrator) maxIterations() int {
+	if o.modeManager != nil && o.modeManager.CurrentMode() == ModeCloud {
+		return MaxToolIterationsCloud
+	}
+	return MaxToolIterationsLocal
+}
+
+// loadProjectContext scans workspace dirs for context files (README.md, AXIOM.md,
+// go.mod, package.json, Cargo.toml) in paths referenced by the user prompt and
+// injects their contents as a system prefix. This gives the LLM the same "lay of
+// the land" a human engineer would have before touching a project.
+func (o *Orchestrator) loadProjectContext(prompt string) string {
+	if len(o.workspaceDirs) == 0 {
+		return ""
+	}
+
+	// Look for any workspace dir mentioned in the prompt
+	lowerPrompt := strings.ToLower(prompt)
+	var targetDirs []string
+	for _, dir := range o.workspaceDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() && strings.Contains(lowerPrompt, strings.ToLower(e.Name())) {
+				targetDirs = append(targetDirs, filepath.Join(dir, e.Name()))
+			}
+		}
+		// Also include the workspace dir itself if mentioned
+		if strings.Contains(lowerPrompt, strings.ToLower(filepath.Base(dir))) {
+			targetDirs = append(targetDirs, dir)
+		}
+	}
+
+	if len(targetDirs) == 0 {
+		return ""
+	}
+
+	contextFiles := []string{
+		"README.md", "AXIOM.md", "go.mod", "package.json",
+		"Cargo.toml", "pyproject.toml", "requirements.txt", "Makefile",
+	}
+
+	var sb strings.Builder
+	for _, dir := range targetDirs {
+		for _, cf := range contextFiles {
+			path := filepath.Join(dir, cf)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			content := string(data)
+			// Truncate very large context files
+			if len(content) > 4000 {
+				content = content[:4000] + "\n... [truncated]"
+			}
+			sb.WriteString(fmt.Sprintf("\n[PROJECT CONTEXT: %s]\n%s\n[END CONTEXT]\n", path, content))
+		}
+	}
+
+	return sb.String()
+}
+
+// errorRecoveryInjection examines the last tool result and — if it contains an
+// error — appends a targeted recovery instruction to steer the next LLM call
+// toward a surgical fix rather than a full rewrite.
+func errorRecoveryInjection(toolResult string) string {
+	lower := strings.ToLower(toolResult)
+	isError := strings.Contains(lower, "[error]") ||
+		strings.Contains(lower, "[stderr]") ||
+		strings.Contains(lower, "exit code") && !strings.Contains(lower, "exit code] 0") ||
+		strings.Contains(lower, "traceback") ||
+		strings.Contains(lower, "syntaxerror") ||
+		strings.Contains(lower, "nameerror") ||
+		strings.Contains(lower, "importerror") ||
+		strings.Contains(lower, "panic:") ||
+		strings.Contains(lower, "undefined:")
+
+	if !isError {
+		return ""
+	}
+
+	return "\n\n[RECOVERY INSTRUCTION] The last tool call produced an error. " +
+		"Read the FULL error message above carefully. " +
+		"Identify the SPECIFIC file and line causing it. " +
+		"Fix ONLY that — do not rewrite the entire file unless the whole structure is wrong. " +
+		"If it is a missing import or dependency, add only that. " +
+		"If it is a syntax error, fix only that line."
+}
+
 // isComplexRequest returns true when a prompt is likely multi-step or requires
 // deep reasoning. Used to gate the planning step — simple requests skip it.
 func isComplexRequest(prompt string) bool {
@@ -566,19 +703,24 @@ func isComplexRequest(prompt string) bool {
 // the LLM inference fast as conversations grow.
 func trimContextMessages(messages []models.Message) []models.Message {
 	// First pass: truncate any tool results that are too large.
-	// Cloud delegation results get a much higher ceiling — truncating generated code
-	// causes the LLM to output it as text instead of calling write_file.
+	// execute_code and ask_cloud_model get the higher limit — build output and
+	// stack traces must be fully visible for the LLM to diagnose errors correctly.
 	for i := range messages {
 		if messages[i].Role != models.RoleTool {
 			continue
 		}
 		limit := maxToolResultBytes
-		if strings.Contains(messages[i].Content, "[SUCCESS]") || strings.Contains(messages[i].Content, "ask_cloud_model") {
+		content := messages[i].Content
+		if strings.Contains(content, "[SUCCESS]") ||
+			strings.Contains(content, "ask_cloud_model") ||
+			strings.Contains(content, "[STDOUT]") ||
+			strings.Contains(content, "[STDERR]") ||
+			strings.Contains(content, "[EXIT CODE]") {
 			limit = maxCloudToolResultBytes
 		}
-		if len(messages[i].Content) > limit {
-			messages[i].Content = messages[i].Content[:limit] +
-				fmt.Sprintf("\n... [TRUNCATED — %d bytes omitted]", len(messages[i].Content)-limit)
+		if len(content) > limit {
+			messages[i].Content = content[:limit] +
+				fmt.Sprintf("\n... [TRUNCATED — %d bytes omitted]", len(content)-limit)
 		}
 	}
 

@@ -194,6 +194,7 @@ func main() {
 		Guardrail:         guard,
 		ModeManager:       modeManager,
 		ReflectionEnabled: cfg.Reflection.Enabled,
+		WorkspaceDirs:     cfg.Tools.AllowedDirs,
 	})
 
 	// ── Wails App ───────────────────────────────────────────────────────
