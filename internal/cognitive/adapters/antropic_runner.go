@@ -391,9 +391,15 @@ func (r *AnthropicRunner) CompleteWithTools(
 
 // convertMessages translates Axiom's flat []models.Message into the
 // alternating user/assistant format Anthropic's API requires.
-// Tool results (role="tool") are injected as user messages with type="tool_result".
+//
+// Critical invariant: a tool_result block MUST be immediately preceded by an
+// assistant message containing a tool_use block with a matching ID. If we can't
+// reconstruct that pairing (e.g. the assistant message isn't parseable JSON or
+// has no tool_call field), we fall back to plain user text so we never send an
+// orphaned tool_result — which causes Anthropic to return HTTP 400.
 func (r *AnthropicRunner) convertMessages(messages []models.Message) ([]anthropicMessage, error) {
 	var out []anthropicMessage
+	toolUseCounter := 0
 
 	i := 0
 	for i < len(messages) {
@@ -401,19 +407,11 @@ func (r *AnthropicRunner) convertMessages(messages []models.Message) ([]anthropi
 
 		switch msg.Role {
 		case models.RoleUser:
-			out = append(out, anthropicMessage{
-				Role:    "user",
-				Content: msg.Content,
-			})
+			out = append(out, anthropicMessage{Role: "user", Content: msg.Content})
 			i++
 
 		case models.RoleAssistant:
-			// Peek ahead: if the next message(s) are tool results, bundle them together
-			// as a multi-block assistant + tool_result turn.
-			assistantContent := []contentBlock{{Type: "text", Text: msg.Content}}
-
-			// Check if the assistant message looks like it contained a tool call
-			// (Axiom stores it as JSON). If so, we'll need to forward the tool_use block.
+			// Try to parse Axiom's stored JSON format to detect a tool call.
 			var assistantJSON struct {
 				Reasoning string `json:"reasoning"`
 				ToolCall  *struct {
@@ -422,52 +420,80 @@ func (r *AnthropicRunner) convertMessages(messages []models.Message) ([]anthropi
 				} `json:"tool_call"`
 				Content string `json:"content"`
 			}
-			toolUseID := ""
-			if err := json.Unmarshal([]byte(msg.Content), &assistantJSON); err == nil && assistantJSON.ToolCall != nil {
-				toolUseID = fmt.Sprintf("axiom_tool_%d", i)
-				argsJSON, _ := json.Marshal(assistantJSON.ToolCall.Args)
-				assistantContent = []contentBlock{
-					{
-						Type:  "tool_use",
-						ID:    toolUseID,
-						Name:  assistantJSON.ToolCall.Name,
-						Input: assistantJSON.ToolCall.Args,
-					},
-				}
-				// Include text reasoning if present
-				if assistantJSON.Reasoning != "" || assistantJSON.Content != "" {
-					text := assistantJSON.Reasoning
-					if assistantJSON.Content != "" {
-						text = assistantJSON.Content
-					}
-					_ = argsJSON
-					assistantContent = append([]contentBlock{{Type: "text", Text: text}}, assistantContent...)
-				}
-			}
+			hasToolCall := json.Unmarshal([]byte(msg.Content), &assistantJSON) == nil &&
+				assistantJSON.ToolCall != nil
 
-			out = append(out, anthropicMessage{Role: "assistant", Content: assistantContent})
-			i++
+			// Peek ahead: does a tool result immediately follow?
+			nextIsToolResult := i+1 < len(messages) && messages[i+1].Role == models.RoleTool
 
-			// If next message is a tool result, pair it as a user turn
-			if i < len(messages) && messages[i].Role == models.RoleTool {
-				toolResult := messages[i].Content
-				useID := toolUseID
-				if useID == "" {
-					useID = fmt.Sprintf("axiom_tool_%d", i)
+			if hasToolCall && nextIsToolResult {
+				// Emit assistant message with a proper tool_use block, then pair
+				// the following tool result as a user tool_result block.
+				toolUseCounter++
+				toolUseID := fmt.Sprintf("axiom_tool_%d", toolUseCounter)
+
+				var assistantBlocks []contentBlock
+				// Prepend a text block for any reasoning/content
+				textContent := assistantJSON.Reasoning
+				if assistantJSON.Content != "" {
+					textContent = assistantJSON.Content
 				}
+				if textContent != "" {
+					assistantBlocks = append(assistantBlocks, contentBlock{Type: "text", Text: textContent})
+				}
+				assistantBlocks = append(assistantBlocks, contentBlock{
+					Type:  "tool_use",
+					ID:    toolUseID,
+					Name:  assistantJSON.ToolCall.Name,
+					Input: assistantJSON.ToolCall.Args,
+				})
+				out = append(out, anthropicMessage{Role: "assistant", Content: assistantBlocks})
+				i++
+
+				// Paired tool_result user message — ID matches the tool_use above
 				out = append(out, anthropicMessage{
 					Role: "user",
 					Content: []contentBlock{{
 						Type:      "tool_result",
-						ToolUseID: useID,
-						Content:   toolResult,
+						ToolUseID: toolUseID,
+						Content:   messages[i].Content,
 					}},
 				})
 				i++
+
+			} else {
+				// No parseable tool call, OR tool call with no following result.
+				// Emit as plain assistant text so we never create an unmatched tool_use.
+				textContent := msg.Content
+				if hasToolCall {
+					// Extract human-readable part from the JSON
+					if assistantJSON.Content != "" {
+						textContent = assistantJSON.Content
+					} else if assistantJSON.Reasoning != "" {
+						textContent = assistantJSON.Reasoning
+					}
+				}
+				if textContent == "" {
+					textContent = "..."
+				}
+				out = append(out, anthropicMessage{Role: "assistant", Content: textContent})
+				i++
+
+				// If a tool result follows a non-tool-call assistant message,
+				// emit it as plain user text — never as a tool_result block.
+				if i < len(messages) && messages[i].Role == models.RoleTool {
+					out = append(out, anthropicMessage{
+						Role:    "user",
+						Content: "[Tool Result]\n" + messages[i].Content,
+					})
+					i++
+				}
 			}
 
 		case models.RoleTool:
-			// Orphaned tool result with no preceding assistant — wrap as user message
+			// Orphaned tool result — no preceding assistant message at all.
+			// Convert to plain user text; never emit a tool_result block without
+			// a matching tool_use.
 			out = append(out, anthropicMessage{
 				Role:    "user",
 				Content: "[Tool Result]\n" + msg.Content,
@@ -479,14 +505,13 @@ func (r *AnthropicRunner) convertMessages(messages []models.Message) ([]anthropi
 		}
 	}
 
-	// Anthropic requires messages to start with a user turn
+	// Anthropic requires the first message to be a user turn
 	if len(out) == 0 || out[0].Role != "user" {
 		out = append([]anthropicMessage{{Role: "user", Content: "Hello"}}, out...)
 	}
 
-	// Ensure alternating user/assistant (merge consecutive same-role messages)
+	// Merge consecutive same-role messages to ensure strict alternation
 	out = mergeConsecutiveRoles(out)
-
 	return out, nil
 }
 
