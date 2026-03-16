@@ -163,11 +163,23 @@ func (hr *HybridRunner) Complete(ctx context.Context, prompt string, maxTokens i
 }
 
 // CompleteWithTools routes and dispatches with tool support.
-func (hr *HybridRunner) CompleteWithTools(ctx context.Context, prompt string, maxTokens int, tools []models.ToolDefinition) (string, error) {
-	runner, _ := hr.router.Route(ctx, prompt)
+// systemContext is the system prompt + repo/tools/memory block;
+// messages is the structured conversation history.
+func (hr *HybridRunner) CompleteWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
+	// Use the last user message as the routing signal.
+	routeSignal := systemContext
+	if len(messages) > 0 {
+		routeSignal = messages[len(messages)-1].Content
+	}
+	runner, _ := hr.router.Route(ctx, routeSignal)
 
 	if tar, ok := runner.(ToolAwareRunner); ok && len(tools) > 0 {
-		return tar.CompleteWithTools(ctx, prompt, maxTokens, tools)
+		return tar.CompleteWithTools(ctx, systemContext, messages, maxTokens, tools)
+	}
+	// Fallback: flatten to a single prompt
+	prompt := systemContext + "\n"
+	for _, msg := range messages {
+		prompt += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)
 	}
 	return runner.Complete(ctx, prompt, maxTokens)
 }

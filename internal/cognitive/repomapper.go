@@ -71,6 +71,42 @@ func BuildRepoTree(root string) string {
 	return repoTreeCache.tree
 }
 
+// BuildShallowListing returns a compact listing of the top-level contents of
+// each dir in the provided list. This gives the LLM exact project paths without
+// flooding the context window with a deep recursive tree.
+func BuildShallowListing(dirs []string) string {
+	if len(dirs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("%s/\n", dir))
+		// Sort: dirs first, then files
+		sort.Slice(entries, func(i, j int) bool {
+			di, dj := entries[i].IsDir(), entries[j].IsDir()
+			if di != dj {
+				return di
+			}
+			return entries[i].Name() < entries[j].Name()
+		})
+		for _, e := range entries {
+			if skipNames[e.Name()] {
+				continue
+			}
+			if e.IsDir() {
+				sb.WriteString(fmt.Sprintf("  %s/\n", e.Name()))
+			} else {
+				sb.WriteString(fmt.Sprintf("  %s\n", e.Name()))
+			}
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
 func buildTree(sb *strings.Builder, dir, prefix string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

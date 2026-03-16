@@ -61,12 +61,18 @@ func (r *RemoteRunner) Complete(ctx context.Context, prompt string, maxTokens in
 }
 
 // CompleteWithTools sends a chat request to Ollama with native tool definitions.
-// This uses /api/chat instead of /api/generate for proper tool calling support.
-func (r *RemoteRunner) CompleteWithTools(ctx context.Context, prompt string, maxTokens int, tools []models.ToolDefinition) (string, error) {
+// systemContext is the system prompt + repo tree + tools schema block.
+// messages is the structured conversation history passed as proper multi-turn turns.
+func (r *RemoteRunner) CompleteWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
 	if r.protocol != ProtocolOllama || len(tools) == 0 {
+		// Fallback: build a flat prompt from system + history and use /api/generate
+		prompt := systemContext + "\n"
+		for _, msg := range messages {
+			prompt += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)
+		}
 		return r.Complete(ctx, prompt, maxTokens)
 	}
-	return r.chatOllamaWithTools(ctx, prompt, maxTokens, tools)
+	return r.chatOllamaWithTools(ctx, systemContext, messages, maxTokens, tools)
 }
 
 func (r *RemoteRunner) Unload() error {
@@ -122,20 +128,29 @@ type ollamaChatResp struct {
 	Done bool `json:"done"`
 }
 
-func (r *RemoteRunner) chatOllamaWithTools(ctx context.Context, prompt string, maxTokens int, tools []models.ToolDefinition) (string, error) {
-	// Convert Axiom tool definitions to Ollama format
+func (r *RemoteRunner) chatOllamaWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
 	ollamaTools := convertToOllamaTools(tools)
 
+	// Build a proper multi-turn message array so Ollama's chat API sees real
+	// conversation structure rather than one giant user string.
+	chatMessages := []ollamaChatMsg{
+		{Role: "system", Content: systemContext},
+	}
+	for _, msg := range messages {
+		chatMessages = append(chatMessages, ollamaChatMsg{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+
 	body, err := json.Marshal(ollamaChatReq{
-		Model: r.model,
-		Messages: []ollamaChatMsg{
-			{Role: "user", Content: prompt},
-		},
-		Stream: false,
-		Tools:  ollamaTools,
+		Model:    r.model,
+		Messages: chatMessages,
+		Stream:   false,
+		Tools:    ollamaTools,
 		Options: map[string]interface{}{
 			"num_predict": maxTokens,
-			"temperature": 0.7,
+			"temperature": 0.1, // Low temp for deterministic tool calling
 			"top_p":       0.9,
 		},
 	})
@@ -279,26 +294,20 @@ func containsWord(s, word string) bool {
 
 // ── Ollama /api/generate (legacy, no tools) ─────────────────────────────────
 
-type ollamaReq struct {
-	Model   string                 `json:"model"`
-	Prompt  string                 `json:"prompt"`
-	Stream  bool                   `json:"stream"`
-	Options map[string]interface{} `json:"options,omitempty"`
-}
-
 type ollamaResp struct {
 	Response string `json:"response"`
 	Done     bool   `json:"done"`
 }
 
 func (r *RemoteRunner) completeOllama(ctx context.Context, prompt string, maxTokens int) (string, error) {
-	body, err := json.Marshal(ollamaReq{
-		Model:  r.model,
-		Prompt: prompt,
-		Stream: false,
-		Options: map[string]interface{}{
+	body, err := json.Marshal(map[string]interface{}{
+		"model":  r.model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json", // Enforce valid JSON output at the API level
+		"options": map[string]interface{}{
 			"num_predict": maxTokens,
-			"temperature": 0.7,
+			"temperature": 0.1, // Low temp for deterministic tool/JSON calling
 			"top_p":       0.9,
 		},
 	})

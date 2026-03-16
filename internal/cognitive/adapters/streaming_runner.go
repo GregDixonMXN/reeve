@@ -60,11 +60,18 @@ func (s *StreamingRunner) Complete(ctx context.Context, prompt string, maxTokens
 }
 
 // CompleteWithTools sends a streaming chat request to Ollama with native tool definitions.
-func (s *StreamingRunner) CompleteWithTools(ctx context.Context, prompt string, maxTokens int, tools []models.ToolDefinition) (string, error) {
+// systemContext is the system prompt + repo tree + tools schema block.
+// messages is the structured conversation history for proper multi-turn Ollama chat.
+func (s *StreamingRunner) CompleteWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
 	if s.protocol != ProtocolOllama || len(tools) == 0 {
+		// Fallback: build a flat prompt and use /api/generate
+		prompt := systemContext + "\n"
+		for _, msg := range messages {
+			prompt += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)
+		}
 		return s.Complete(ctx, prompt, maxTokens)
 	}
-	return s.streamOllamaWithTools(ctx, prompt, maxTokens, tools)
+	return s.streamOllamaWithTools(ctx, systemContext, messages, maxTokens, tools)
 }
 
 // Unload signals the server to release the model.
@@ -78,19 +85,28 @@ func (s *StreamingRunner) Unload() error {
 
 // ── Ollama /api/chat streaming with tools ───────────────────────────────────
 
-func (s *StreamingRunner) streamOllamaWithTools(ctx context.Context, prompt string, maxTokens int, tools []models.ToolDefinition) (string, error) {
+func (s *StreamingRunner) streamOllamaWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
 	ollamaTools := convertToOllamaTools(tools)
 
+	// Build proper multi-turn message array with system message first.
+	chatMessages := []ollamaChatMsg{
+		{Role: "system", Content: systemContext},
+	}
+	for _, msg := range messages {
+		chatMessages = append(chatMessages, ollamaChatMsg{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+
 	body, err := json.Marshal(ollamaChatReq{
-		Model: s.model,
-		Messages: []ollamaChatMsg{
-			{Role: "user", Content: prompt},
-		},
-		Stream: true,
-		Tools:  ollamaTools,
+		Model:    s.model,
+		Messages: chatMessages,
+		Stream:   true,
+		Tools:    ollamaTools,
 		Options: map[string]interface{}{
 			"num_predict": maxTokens,
-			"temperature": 0.7,
+			"temperature": 0.1, // Low temp for deterministic tool calling
 			"top_p":       0.9,
 		},
 	})
@@ -187,9 +203,10 @@ func (s *StreamingRunner) streamOllama(ctx context.Context, prompt string, maxTo
 		"model":  s.model,
 		"prompt": prompt,
 		"stream": true,
+		"format": "json", // Enforce valid JSON output at the API level
 		"options": map[string]interface{}{
 			"num_predict": maxTokens,
-			"temperature": 0.7,
+			"temperature": 0.1, // Low temp for deterministic JSON output
 			"top_p":       0.9,
 		},
 	})

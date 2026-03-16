@@ -20,10 +20,12 @@ type LLMRunner interface {
 
 // ToolAwareRunner extends LLMRunner with native tool calling support.
 // Runners that implement this interface (e.g., Ollama /api/chat) will
-// receive the full tool array for structured tool calling.
+// receive the system context string and the full structured message history
+// separately so the chat API gets proper multi-turn message structure
+// instead of one monolithic user string.
 type ToolAwareRunner interface {
 	LLMRunner
-	CompleteWithTools(ctx context.Context, prompt string, maxTokens int, tools []models.ToolDefinition) (string, error)
+	CompleteWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error)
 }
 
 // Request is a generation request to the cognitive engine.
@@ -43,16 +45,30 @@ type Response struct {
 
 // Engine wraps the local LLM (DeepSeek/Phi-4) with prompt construction and output parsing.
 type Engine struct {
-	cfg    config.ModelConfig
-	runner LLMRunner
+	cfg           config.ModelConfig
+	runner        LLMRunner
+	mode          string   // "local", "hybrid", "cloud"
+	workspaceDirs []string // allowed dirs for file operations (injected into system prompt)
 }
 
 func NewEngine(cfg config.ModelConfig) *Engine {
-	return &Engine{cfg: cfg}
+	return &Engine{cfg: cfg, mode: "hybrid"}
 }
 
 func (e *Engine) SetRunner(r LLMRunner) {
 	e.runner = r
+}
+
+// SetMode updates the engine's operating mode, which changes the system prompt
+// rules — specifically how the LLM is instructed to use tools vs. delegate to cloud.
+func (e *Engine) SetMode(mode string) {
+	e.mode = mode
+}
+
+// SetWorkspaceDirs tells the engine which directories are available for file ops.
+// They're injected into the system prompt so the LLM knows exact paths without guessing.
+func (e *Engine) SetWorkspaceDirs(dirs []string) {
+	e.workspaceDirs = dirs
 }
 
 // Generate executes the Think step of the Think-Verify-Act loop.
@@ -63,11 +79,12 @@ func (e *Engine) Generate(ctx context.Context, req Request) (*Response, error) {
 
 	prompt := e.buildPrompt(req)
 
-	// If the runner supports native tool calling, use it for better structured output
+	// If the runner supports native tool calling, pass structured messages so
+	// Ollama's chat API gets proper multi-turn history instead of one giant string.
 	var raw string
 	var err error
 	if tar, ok := e.runner.(ToolAwareRunner); ok && len(req.Tools) > 0 {
-		raw, err = tar.CompleteWithTools(ctx, prompt, e.cfg.ContextSize, req.Tools)
+		raw, err = tar.CompleteWithTools(ctx, e.buildSystemSection(req), req.Messages, e.cfg.ContextSize, req.Tools)
 	} else {
 		raw, err = e.runner.Complete(ctx, prompt, e.cfg.ContextSize)
 	}
@@ -75,18 +92,97 @@ func (e *Engine) Generate(ctx context.Context, req Request) (*Response, error) {
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}
 
-	// Parse the raw output into a structured response (handling XML tags and markdown quirks)
-	return e.parseResponse(raw)
+	// Parse the raw output into a structured response (handling XML tags and markdown quirks).
+	resp, err := e.parseResponse(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	// JSON retry: if we fell back to plain text (no tool call and the JSON parse
+	// failed), send one corrective message asking for valid JSON.
+	if resp.ToolCall == nil {
+		thinkRe := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
+		textForJSON := thinkRe.ReplaceAllString(raw, "")
+		cleaned := cleanJSON(textForJSON)
+		var probe structuredOutput
+		if json.Unmarshal([]byte(cleaned), &probe) != nil {
+			// JSON parse failed — retry once with an explicit correction prompt.
+			retryPrompt := prompt +
+				fmt.Sprintf("<|assistant|>\n%s\n<|end|>\n", raw) +
+				"<|user|>\nYour last response was not valid JSON. You MUST respond with ONLY " +
+				"a single valid JSON object and nothing else — no markdown, no code fences, " +
+				"no text outside the braces. Required format:\n" +
+				`{"reasoning":"...","tool_call":null,"content":"..."}` + "\n<|end|>\n<|assistant|>\n"
+			raw2, err2 := e.runner.Complete(ctx, retryPrompt, e.cfg.ContextSize)
+			if err2 == nil {
+				if resp2, err3 := e.parseResponse(raw2); err3 == nil &&
+					(resp2.ToolCall != nil || resp2.Content != "") {
+					return resp2, nil
+				}
+			}
+		}
+	}
+
+	return resp, nil
 }
 
-const systemPrompt = `You are Axiom — a precise, capable autonomous operator. Sharp, resourceful, and purposeful. Not a search engine with a chat interface, but an agent with judgment and opinions. You come back with answers, not questions.
+// modeRule2 returns the tool-use strategy instruction for rule #2, keyed by mode.
+// Local mode gets full autonomous tool use; hybrid/cloud keep the delegation-first behaviour.
+func modeRule2(mode string) string {
+	if mode == "local" {
+		return `2. AUTONOMOUS LOCAL OPERATION: You are running in LOCAL mode — there is NO cloud delegation available. Do NOT call "ask_cloud_model"; it does not exist in this mode. Instead, use ALL of your available tools autonomously to complete every task, no matter how complex:
+   - Complex code generation → use write_file + execute_code iteratively
+   - Research / facts → use web_search + web_scrape + wolfram
+   - File work → use read_file, write_file, edit_file, list_dir
+   - Git operations → use git_ops
+   - Memory → use search_memory
+   Handle ALL tasks — architecture, refactoring, multi-step coding, analysis, creative writing — using your tools and your own reasoning. Never refuse a task because it feels complex; break it into steps and execute them.`
+	}
+	if mode == "cloud" {
+		return `2. CLOUD MODE — YOU ARE THE BRAIN: You are Claude running as the primary orchestrator. Do NOT call "ask_cloud_model" (that tool does not exist in cloud mode). You have direct access to all tools — use them yourself:
+   - File work → read_file, write_file, edit_file, list_dir
+   - Code execution → execute_code
+   - Web → web_search, web_scrape
+   - Facts → wolfram
+   - Git → git_ops
+   - Memory → search_memory
+   Build projects by calling write_file for each file directly. Never output file contents as text — always write them to disk. Execute, verify, fix if needed.`
+	}
+	// hybrid
+	return `2. CLOUD DELEGATION: DEFAULT TO CLAUDE for ANY task requiring deep reasoning, multi-step planning, code architecture, refactoring, analysis, creative writing, or nuanced judgment. Only handle simple factual lookups and direct file operations locally. When in doubt, delegate to claude.`
+}
+
+// buildSystemPrompt returns the full system prompt for the given operating mode.
+// In cloud mode the JSON-output constraint is relaxed because Claude uses native
+// tool-use blocks rather than embedding tool calls in a JSON content field.
+func buildSystemPrompt(mode string) string {
+	if mode == "cloud" {
+		return `You are Axiom — a precise, capable autonomous agent. Sharp, resourceful, and purposeful.
+
+` + modeRule2(mode) + `
+
+RULES:
+3. WORKSPACE: All file operations MUST use paths inside the allowed workspace directories listed below. NEVER invent a path — use the exact paths provided.
+4. FILE WRITING: When asked to build a project or create files, call write_file for EACH file. Do NOT output file contents as text in your response — write them to disk.
+5. EXECUTION: After writing code, call execute_code to run/verify it. Read errors, fix with write_file, re-run. Never report success without running the code.
+6. VERIFIED KNOWLEDGE: Use wolfram for math, science, history, or unit conversions. Never estimate numbers.
+7. LIVE INTELLIGENCE: Use web_search and web_scrape for anything after 2024 or technical docs.
+8. TASK COMPLETION: When fully done with no more tool calls, end your response with <TASK_COMPLETE>.
+9. PERSONA: Be direct, precise, and resourceful. Skip filler. Have opinions. Come back with answers, not questions.`
+	}
+
+	return `You are Axiom — a precise, capable autonomous operator. Sharp, resourceful, and purposeful. Not a search engine with a chat interface, but an agent with judgment and opinions. You come back with answers, not questions.
 
 CRITICAL RULES:
 1. Respond ONLY with a single, valid JSON object.
-2. CLOUD DELEGATION: DEFAULT TO CLAUDE for ANY task requiring deep reasoning, multi-step planning, code architecture, refactoring, analysis, creative writing, or nuanced judgment. Only handle simple factual lookups and direct file operations locally. When in doubt, delegate to claude.
+` + modeRule2(mode) + `
 3. VERIFIED KNOWLEDGE: Use "wolfram" for ALL factual data involving math, science, history, geography, or units. Never estimate dates or numbers.
 4. LIVE INTELLIGENCE: Use "web_search" and "web_scrape" for any information after 2024, technical documentation, or breaking news.
-5. LOCAL EXECUTION: Use "write_file" and "execute_code" for local development. NEVER skip steps (e.g., write the file before you run it).
+5. LOCAL EXECUTION: Use "write_file" and "execute_code" iteratively for local development. After every execute_code call, inspect the output and stderr:
+   - If stderr contains an error or the output looks wrong → immediately call write_file with the fix, then execute_code again
+   - Repeat this write → execute → read-error → fix cycle until the code runs cleanly
+   - NEVER report success without having executed the code to verify it works
+   - NEVER skip steps (e.g., write the file before you run it)
 6. TOOL INTEGRITY: If an action is required, the "tool_call" field MUST contain the payload. NEVER summarize an action in "content" without executing it first.
    - NEVER output file contents as text in "content" when write_file should be called. Writing code to "content" instead of disk is a failure.
    - When building a project with multiple files: call write_file for EACH file individually, one tool call per iteration.
@@ -101,36 +197,53 @@ RESPONSE FORMAT:
   "tool_call": {"name": "tool_name", "args": {...}} | null,
   "content": "Message to user (only if tool_call is null or reporting a result). Append <TASK_COMPLETE> when fully done."
 }`
+}
 
-func (e *Engine) buildPrompt(req Request) string {
-	// 1. Start with the System Prompt
-	prompt := "<|system|>\n" + systemPrompt + "\n"
+// buildSystemSection returns the system prompt + repo tree + tools + memory block,
+// without conversation history. Used by ToolAwareRunner so the chat API can
+// receive a proper system message alongside structured multi-turn history.
+func (e *Engine) buildSystemSection(req Request) string {
+	section := buildSystemPrompt(e.mode) + "\n"
 
-	// 1b. Inject live repo map so the LLM knows exact file paths
+	// Workspace listing: shallow top-level view of each allowed dir so the LLM
+	// knows exact paths without us having to dump the full tree into context.
+	if len(e.workspaceDirs) > 0 {
+		listing := BuildShallowListing(e.workspaceDirs)
+		if listing != "" {
+			section += "\nWORKSPACE DIRECTORIES (use these exact paths for file operations — do NOT invent paths):\n"
+			section += listing + "\n"
+		}
+	}
+
 	repoTree := BuildRepoTree(e.cfg.ProjectRoot)
 	if repoTree != "" {
-		prompt += "\nREPO STRUCTURE (use these exact paths — do NOT invent paths):\n"
-		prompt += repoTree + "\n"
+		section += "\nREPO STRUCTURE (use these exact paths — do NOT invent paths):\n"
+		section += repoTree + "\n"
 	}
 
-	// 2. Inject Available Tools Schema
 	if len(req.Tools) > 0 {
-		prompt += "\nAVAILABLE TOOLS:\n"
+		section += "\nAVAILABLE TOOLS:\n"
 		for _, t := range req.Tools {
-			prompt += fmt.Sprintf("- %s: %s\n  Args: %s\n", t.Name, t.Description, t.ArgsSchema)
+			section += fmt.Sprintf("- %s: %s\n  Args: %s\n", t.Name, t.Description, t.ArgsSchema)
 		}
 	}
 
-	// 3. Inject Semantic Memory Context
 	if len(req.MemoryContext) > 0 {
-		prompt += "\nRELEVANT MEMORY:\n"
+		section += "\nRELEVANT MEMORY:\n"
 		for _, m := range req.MemoryContext {
-			prompt += fmt.Sprintf("- [%.2f] %s\n", m.Score, m.Content)
+			section += fmt.Sprintf("- [%.2f] %s\n", m.Score, m.Content)
 		}
 	}
+
+	return section
+}
+
+func (e *Engine) buildPrompt(req Request) string {
+	// 1. Start with the System Prompt (mode-aware)
+	prompt := "<|system|>\n" + e.buildSystemSection(req)
 	prompt += "<|end|>\n"
 
-	// 4. Append Conversation History
+	// 2. Append Conversation History
 	for _, msg := range req.Messages {
 		switch msg.Role {
 		case models.RoleUser:
@@ -142,7 +255,7 @@ func (e *Engine) buildPrompt(req Request) string {
 		}
 	}
 
-	// 5. Cue the Assistant
+	// 3. Cue the Assistant
 	prompt += "<|assistant|>\n"
 	return prompt
 }

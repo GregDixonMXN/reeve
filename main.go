@@ -111,6 +111,12 @@ func main() {
 	engine.SetRunner(localRunner)
 	appLog.Info("Local runner: %s @ %s (model: %s)", cfg.Model.RunnerType, cfg.Model.RunnerURL, cfg.Model.RunnerModel)
 
+	// Inject workspace dirs so the LLM knows exact allowed paths
+	if len(cfg.Tools.AllowedDirs) > 0 {
+		engine.SetWorkspaceDirs(cfg.Tools.AllowedDirs)
+		appLog.Info("Workspace dirs injected into system prompt: %v", cfg.Tools.AllowedDirs)
+	}
+
 	// ── Cloud Runner (Anthropic) ────────────────────────────────────────
 	var cloudRunner *adapters.AnthropicRunner
 	if cfg.Cloud.AnthropicKey != "" {

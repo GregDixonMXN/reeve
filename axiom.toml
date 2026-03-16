@@ -18,7 +18,7 @@ temperature    = 0.6                         # Lower slightly for DeepSeek codin
 top_p          = 0.9
 runner_type    = "ollama"                    # "ollama" | "openai"
 runner_url     = "http://localhost:11434"    # Ollama default port
-runner_model   = "qwen2.5-coder:7b"           # The new Qwen-based sovereign brain
+runner_model   = "qwen2.5-coder:32b"           # The new Qwen-based sovereign brain
 runner_timeout = 300                         # CRITICAL: Increase timeout to 5 minutes
 enable_streaming = true
 

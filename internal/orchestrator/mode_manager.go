@@ -78,6 +78,7 @@ func (mm *ModeManager) SetMode(mode Mode) error {
 			return fmt.Errorf("local mode requires Ollama — is it running?")
 		}
 		mm.engine.SetRunner(mm.localRunner)
+		mm.engine.SetMode("local") // tell the engine: no cloud delegation, use all local tools
 		if mm.cloudDisabler != nil {
 			mm.cloudDisabler(false) // disable ask_cloud_model
 		}
@@ -94,6 +95,7 @@ func (mm *ModeManager) SetMode(mode Mode) error {
 			// No cloud key — hybrid falls back to local with cloud tool enabled
 			mm.engine.SetRunner(mm.localRunner)
 		}
+		mm.engine.SetMode("hybrid")
 		if mm.cloudDisabler != nil {
 			mm.cloudDisabler(true) // enable ask_cloud_model as fallback
 		}
@@ -104,6 +106,7 @@ func (mm *ModeManager) SetMode(mode Mode) error {
 			return fmt.Errorf("cloud mode requires an Anthropic API key (set cloud.anthropic_key in axiom.toml)")
 		}
 		mm.engine.SetRunner(mm.cloudRunner)
+		mm.engine.SetMode("cloud")
 		if mm.cloudDisabler != nil {
 			mm.cloudDisabler(false) // cloud model IS the runner, no delegation needed
 		}
