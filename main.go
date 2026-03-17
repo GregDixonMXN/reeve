@@ -195,6 +195,7 @@ func main() {
 		ModeManager:       modeManager,
 		ReflectionEnabled: cfg.Reflection.Enabled,
 		WorkspaceDirs:     cfg.Tools.AllowedDirs,
+		MaxIterations:     cfg.Model.MaxIterations,
 	})
 
 	// ── Wails App ───────────────────────────────────────────────────────

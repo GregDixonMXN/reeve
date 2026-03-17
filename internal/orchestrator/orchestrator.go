@@ -82,6 +82,7 @@ type Config struct {
 	ModeManager       *ModeManager
 	ReflectionEnabled bool
 	WorkspaceDirs     []string // allowed dirs — used for project context loading
+	MaxIterations     int      // 0 = use mode defaults (25 local, 50 cloud)
 }
 
 type Orchestrator struct {
@@ -98,6 +99,7 @@ type Orchestrator struct {
 	conversations     map[string]*models.Conversation
 	reflectionEnabled bool
 	workspaceDirs     []string
+	iterationLimit    int // 0 = use mode defaults
 }
 
 func New(cfg Config) *Orchestrator {
@@ -111,6 +113,7 @@ func New(cfg Config) *Orchestrator {
 		conversations:     make(map[string]*models.Conversation),
 		reflectionEnabled: cfg.ReflectionEnabled,
 		workspaceDirs:     cfg.WorkspaceDirs,
+		iterationLimit:    cfg.MaxIterations,
 	}
 }
 
@@ -585,7 +588,12 @@ func (o *Orchestrator) saveConversation(id string, conv *models.Conversation) {
 }
 
 // maxIterations returns the agent loop ceiling for the current mode.
+// If a custom limit is configured (> 0), it takes precedence over mode defaults.
+// Set to a very large number (e.g. 9999) in axiom.toml to effectively uncap.
 func (o *Orchestrator) maxIterations() int {
+	if o.iterationLimit > 0 {
+		return o.iterationLimit
+	}
 	if o.modeManager != nil && o.modeManager.CurrentMode() == ModeCloud {
 		return MaxToolIterationsCloud
 	}

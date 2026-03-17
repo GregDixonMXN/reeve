@@ -23,6 +23,7 @@ runner_timeout = 300                         # CRITICAL: Increase timeout to 5 m
 enable_streaming = true
 
 default_mode = "local"
+max_iterations = 9999           # 0 = mode defaults (25 local / 50 cloud); 9999 = effectively uncapped
 
 [embedding]
 enabled  = true

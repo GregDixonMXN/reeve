@@ -42,8 +42,9 @@ type ModelConfig struct {
 	RunnerModel     string  `toml:"runner_model"`
 	RunnerTimeout   int     `toml:"runner_timeout"`
 	EnableStreaming bool    `toml:"enable_streaming"`
-	DefaultMode     string  `toml:"default_mode"` // "local", "hybrid", "cloud"
-	ProjectRoot     string  `toml:"project_root"` // auto-detected if empty
+	DefaultMode     string  `toml:"default_mode"`   // "local", "hybrid", "cloud"
+	ProjectRoot     string  `toml:"project_root"`   // auto-detected if empty
+	MaxIterations   int     `toml:"max_iterations"` // 0 = use mode defaults (25/50)
 }
 
 type EmbeddingConfig struct {
