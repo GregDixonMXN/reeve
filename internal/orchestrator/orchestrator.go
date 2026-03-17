@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -128,6 +129,13 @@ func (o *Orchestrator) Start() {
 	totalMem, _ := o.memory.MemoryCount()
 	vecMem, _ := o.memory.VectorCount()
 	o.log.Info("Memory loaded: %d total memories, %d with vectors", totalMem, vecMem)
+
+	// Prune stale memories on startup — keeps recall quality high and DB lean
+	if pruned, err := o.memory.Prune(); err != nil {
+		o.log.Warn("Memory prune failed (non-fatal): %v", err)
+	} else if pruned > 0 {
+		o.log.Info("Memory pruned: removed %d stale entries", pruned)
+	}
 }
 
 func (o *Orchestrator) Shutdown() {
@@ -639,6 +647,7 @@ func (o *Orchestrator) loadProjectContext(prompt string) string {
 
 	var sb strings.Builder
 	for _, dir := range targetDirs {
+		// Read context files
 		for _, cf := range contextFiles {
 			path := filepath.Join(dir, cf)
 			data, err := os.ReadFile(path)
@@ -646,15 +655,42 @@ func (o *Orchestrator) loadProjectContext(prompt string) string {
 				continue
 			}
 			content := string(data)
-			// Truncate very large context files
 			if len(content) > 4000 {
 				content = content[:4000] + "\n... [truncated]"
 			}
 			sb.WriteString(fmt.Sprintf("\n[PROJECT CONTEXT: %s]\n%s\n[END CONTEXT]\n", path, content))
 		}
+
+		// Git status — gives the LLM real situational awareness and stops it
+		// clobbering unstaged work or re-creating files that already exist.
+		if gitStatus := runGitStatus(dir); gitStatus != "" {
+			sb.WriteString(fmt.Sprintf("\n[GIT STATUS: %s]\n%s\n[END GIT STATUS]\n", dir, gitStatus))
+		}
 	}
 
 	return sb.String()
+}
+
+// runGitStatus runs `git status --short` in a directory and returns the output.
+// Returns empty string if git is unavailable, the dir is not a repo, or it times out.
+func runGitStatus(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--short", "--branch")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return ""
+	}
+	// Cap output — a repo with 1000 untracked files doesn't need to flood context
+	if len(s) > 1500 {
+		s = s[:1500] + "\n... [truncated]"
+	}
+	return s
 }
 
 // errorRecoveryInjection examines the last tool result and — if it contains an
@@ -732,14 +768,43 @@ func trimContextMessages(messages []models.Message) []models.Message {
 		}
 	}
 
-	// Second pass: apply sliding window — keep first message + last N
+	// Second pass: sliding window — if within limit return as-is
 	if len(messages) <= maxContextMessages {
 		return messages
 	}
 
-	// Always keep the first user message for context anchor, then last window
-	tail := messages[len(messages)-maxContextMessages+1:]
-	return append([]models.Message{messages[0]}, tail...)
+	// Over limit: instead of silently dropping history, preserve continuity by:
+	//   1. Keeping the first user message as a context anchor
+	//   2. Injecting a summary stub describing what was condensed
+	//   3. Keeping the last N messages verbatim for immediate context
+	keepTail := maxContextMessages / 2 // keep last ~20 messages verbatim
+	if keepTail < 10 {
+		keepTail = 10
+	}
+	tail := messages[len(messages)-keepTail:]
+	anchor := messages[0]
+	dropped := len(messages) - keepTail - 1
+
+	summary := models.Message{
+		Role: models.RoleUser,
+		Content: fmt.Sprintf(
+			"[CONTEXT SUMMARY: %d earlier messages condensed. "+
+				"Conversation began with: %q — continue from the recent messages below.]",
+			dropped, truncateStr(anchor.Content, 200)),
+		Timestamp: anchor.Timestamp,
+	}
+
+	result := make([]models.Message, 0, keepTail+2)
+	result = append(result, anchor, summary)
+	result = append(result, tail...)
+	return result
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // buildMemoryInjection pre-builds the memory injection string once so it

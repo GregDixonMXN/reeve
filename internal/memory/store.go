@@ -106,6 +106,74 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Prune removes stale, low-importance memories to keep the DB lean and recall
+// quality high. Called at startup and can be called periodically.
+//
+// Pruning rules (applied in order):
+//  1. Never-accessed memories older than 30 days with importance < 0.3
+//  2. Memories accessed 0 times, older than 7 days, importance < 0.5
+//  3. Hard cap: keep only the most recent 2000 memories total
+//
+// Returns the number of memories pruned.
+func (s *Store) Prune() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total := 0
+
+	// Rule 1: stale never-accessed low-importance memories (30 days)
+	r1, err := s.db.Exec(`
+		DELETE FROM memories
+		WHERE (last_accessed IS NULL OR last_accessed < datetime('now', '-30 days'))
+		  AND access_count = 0
+		  AND importance < 0.3
+		  AND created_at < datetime('now', '-30 days')
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("prune rule 1: %w", err)
+	}
+	n, _ := r1.RowsAffected()
+	total += int(n)
+
+	// Rule 2: never-accessed, week-old, moderate-low importance
+	r2, err := s.db.Exec(`
+		DELETE FROM memories
+		WHERE access_count = 0
+		  AND importance < 0.5
+		  AND created_at < datetime('now', '-7 days')
+	`)
+	if err != nil {
+		return total, fmt.Errorf("prune rule 2: %w", err)
+	}
+	n, _ = r2.RowsAffected()
+	total += int(n)
+
+	// Rule 3: hard cap — keep only the 2000 most recent memories
+	r3, err := s.db.Exec(`
+		DELETE FROM memories
+		WHERE id NOT IN (
+			SELECT id FROM memories ORDER BY created_at DESC LIMIT 2000
+		)
+	`)
+	if err != nil {
+		return total, fmt.Errorf("prune rule 3: %w", err)
+	}
+	n, _ = r3.RowsAffected()
+	total += int(n)
+
+	// Sync the vector table — remove orphaned vectors for pruned memories
+	if total > 0 {
+		if _, err := s.db.Exec(`
+			DELETE FROM memory_vec
+			WHERE memory_id NOT IN (SELECT id FROM memories)
+		`); err != nil {
+			return total, fmt.Errorf("prune vector sync: %w", err)
+		}
+	}
+
+	return total, nil
+}
+
 // WipeAll permanently deletes ALL vector data and reclaims disk space.
 // This is the "Nuclear Option" for fixing context locks.
 func (s *Store) WipeAll() error {

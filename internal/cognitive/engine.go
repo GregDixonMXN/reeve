@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"axiom/internal/config"
 	"axiom/internal/memory"
@@ -126,6 +129,32 @@ func (e *Engine) Generate(ctx context.Context, req Request) (*Response, error) {
 	return resp, nil
 }
 
+// loadUserContextFile reads AXIOM.md from the project root (if it exists) and
+// returns its contents for injection into the system prompt. This lets the user
+// define persistent context: their name, preferred stack, project conventions,
+// working directory preferences — anything Axiom should always know.
+func loadUserContextFile(projectRoot string) string {
+	if projectRoot == "" {
+		return ""
+	}
+	candidates := []string{
+		filepath.Join(projectRoot, "AXIOM.md"),
+		filepath.Join(projectRoot, "axiom.md"),
+	}
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err == nil && len(data) > 0 {
+			content := strings.TrimSpace(string(data))
+			// Cap at 2000 chars to avoid bloating the system prompt
+			if len(content) > 2000 {
+				content = content[:2000] + "\n... [truncated]"
+			}
+			return content
+		}
+	}
+	return ""
+}
+
 // modeRule2 returns the tool-use strategy instruction for rule #2, keyed by mode.
 // Local mode gets full autonomous tool use; hybrid/cloud keep the delegation-first behaviour.
 func modeRule2(mode string) string {
@@ -206,6 +235,14 @@ RESPONSE FORMAT:
 // receive a proper system message alongside structured multi-turn history.
 func (e *Engine) buildSystemSection(req Request) string {
 	section := buildSystemPrompt(e.mode) + "\n"
+
+	// Current date/time — injected so the LLM never has to guess or estimate
+	section += fmt.Sprintf("\nCURRENT DATE/TIME: %s\n", time.Now().Format("Monday, January 2 2006 — 15:04 MST"))
+
+	// User context file — AXIOM.md in the project root (if it exists)
+	if userCtx := loadUserContextFile(e.cfg.ProjectRoot); userCtx != "" {
+		section += "\nUSER CONTEXT:\n" + userCtx + "\n"
+	}
 
 	// Workspace listing: shallow top-level view of each allowed dir so the LLM
 	// knows exact paths without us having to dump the full tree into context.

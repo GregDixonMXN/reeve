@@ -68,3 +68,6 @@ allowed_binaries = [
 ]
 timeout_sec     = 30
 max_output_bytes = 65536
+
+[reflection]
+enabled = true   # self-critique step for responses > 200 chars (cloud mode recommended)
