@@ -5,6 +5,11 @@
 - **Timezone:** CST (Oklahoma)
 - **Occupation:** Tattoo shop owner & artist, pivoting to game dev & AI development
 
+## Running Axiom
+- Dev: `wails dev -tags webkit2_41` (from `/home/shki/projects/axiom`)
+- Build: `wails build -clean -tags webkit2_41`
+- The `-tags webkit2_41` flag is required — don't omit it
+
 ## Working Directories
 - All projects live in `/home/shki/projects/`
 - Documents: `/home/shki/Documents/`
