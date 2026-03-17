@@ -169,7 +169,7 @@ func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.
 	var finalResponse *cognitive.Response
 	var toolsUsedThisTurn []string
 
-	for i := 0; i < MaxToolIterations; i++ {
+	for i := 0; i < o.maxIterations(); i++ {
 		// Snapshot current messages (trimmed for context window safety)
 		rawMsgs := make([]models.Message, len(conv.Messages))
 		copy(rawMsgs, conv.Messages)
@@ -228,7 +228,7 @@ func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.
 	}
 
 	if finalResponse == nil {
-		return nil, fmt.Errorf("max tool iterations (%d) exceeded", MaxToolIterations)
+		return nil, fmt.Errorf("max tool iterations (%d) exceeded", o.maxIterations())
 	}
 
 	if finalResponse.Content == "" {
@@ -330,7 +330,11 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 		planPrompt := fmt.Sprintf(
 			"Before acting, produce a complete FILE MANIFEST for this task. "+
 				"List EVERY file you will create or modify, with its exact path and one-line description. "+
-				"Then list the steps in order. Be specific — paths must be absolute.\n\nTASK: %s", userPrompt)
+				"Then list the steps in order. Be specific — paths must be absolute.\n\n"+
+				"CRITICAL REMINDER: You will use write_file tool calls to create every file. "+
+				"You must NEVER output file contents as text or code blocks — that is a hard failure. "+
+				"One file = one write_file call. The file manifest you produce here will be executed as write_file calls.\n\n"+
+				"TASK: %s", userPrompt)
 
 		if projectContext != "" {
 			planPrompt += projectContext
@@ -380,7 +384,14 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 			for j := len(llmMessages) - 1; j >= 0; j-- {
 				if llmMessages[j].Role == models.RoleUser {
 					if taskPlan != "" {
-						llmMessages[j].Content += fmt.Sprintf("\n\n[TASK PLAN — EXECUTE THIS EXACTLY]\n%s\n[END TASK PLAN]", taskPlan)
+						llmMessages[j].Content += fmt.Sprintf(
+							"\n\n[TASK PLAN — EXECUTE THIS EXACTLY]\n%s\n[END TASK PLAN]"+
+								"\n\n[MANDATORY EXECUTION RULE]\n"+
+								"Execute the plan above using write_file tool calls — one per file. "+
+								"Do NOT output any file contents as text or code blocks in your response. "+
+								"The ONLY correct action for creating a file is a write_file tool call. "+
+								"Start with the first file in the manifest now.",
+							taskPlan)
 					}
 					if projectContext != "" {
 						llmMessages[j].Content += projectContext
@@ -418,6 +429,36 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 
 		// ── No tool call: LLM is done ────────────────────────────────────
 		if resp.ToolCall == nil {
+			// Intercept: if the LLM dumped a code block in content instead of
+			// calling write_file, extract it and force a write_file call.
+			// This prevents qwen/local models from "printing" files to chat.
+			if extractedPath, extractedCode := extractCodeBlock(resp.Content); extractedPath != "" {
+				o.log.Warn("LLM dumped code to content instead of write_file — intercepting (path: %s)", extractedPath)
+				emit(LoopEvent{
+					Kind:      LoopEventToolCall,
+					Iteration: iteration,
+					ToolName:  "write_file",
+					Message:   fmt.Sprintf("Auto-intercepted: writing %s to disk", extractedPath),
+				})
+				// Record assistant intent
+				conv.AddMessage(models.RoleAssistant, fmt.Sprintf("writing %s", extractedPath))
+				// Execute the write
+				writeResult, writeErr := o.tools.Execute(o.ctx, &models.ToolCall{
+					Name: "write_file",
+					Args: map[string]interface{}{"path": extractedPath, "content": extractedCode},
+				})
+				if writeErr != nil {
+					conv.AddMessage(models.RoleTool, fmt.Sprintf("[ERROR] write_file: %s", writeErr))
+					lastToolResult = fmt.Sprintf("[ERROR] write_file: %s", writeErr)
+				} else {
+					conv.AddMessage(models.RoleTool, fmt.Sprintf("[TOOL RESULT]\n%s\n[END TOOL RESULT]", writeResult))
+					lastToolResult = writeResult
+					emit(LoopEvent{Kind: LoopEventToolResult, Iteration: iteration, ToolName: "write_file", Message: writeResult})
+				}
+				// Continue the loop so the LLM can write the next file
+				continue
+			}
+
 			finalContent = resp.Content
 			finalReasoning = resp.Reasoning
 
@@ -798,6 +839,95 @@ func trimContextMessages(messages []models.Message) []models.Message {
 	result = append(result, anchor, summary)
 	result = append(result, tail...)
 	return result
+}
+
+// extractCodeBlock scans LLM content for a pattern like:
+//
+//	# /some/path/file.py
+//	```python
+//	<code>
+//	```
+//
+// or:
+//
+//	**`/path/to/file.py`**
+//	```
+//	<code>
+//	```
+//
+// Returns (path, code) if found, or ("", "") if not.
+// This is the intercept layer for local models that dump file contents into
+// content text instead of calling write_file.
+func extractCodeBlock(content string) (path string, code string) {
+	if content == "" {
+		return "", ""
+	}
+	lines := strings.Split(content, "\n")
+
+	// Scan for a line that looks like a file path annotation
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Pattern: line starting with # /path or ## /path
+		if strings.HasPrefix(line, "#") {
+			candidate := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "##"), "#"))
+			if looksLikeFilePath(candidate) && i+1 < len(lines) {
+				code, ok := collectFencedBlock(lines[i+1:])
+				if ok {
+					return candidate, code
+				}
+			}
+		}
+
+		// Pattern: **`/path`** or `/path`
+		stripped := strings.Trim(line, "*`")
+		if looksLikeFilePath(stripped) && i+1 < len(lines) {
+			code, ok := collectFencedBlock(lines[i+1:])
+			if ok {
+				return stripped, code
+			}
+		}
+	}
+	return "", ""
+}
+
+// looksLikeFilePath returns true if s is an absolute path with a file extension.
+func looksLikeFilePath(s string) bool {
+	if len(s) < 4 {
+		return false
+	}
+	if !strings.HasPrefix(s, "/") {
+		return false
+	}
+	ext := s[strings.LastIndex(s, "."):]
+	validExts := []string{".py", ".go", ".js", ".ts", ".tsx", ".jsx", ".json", ".toml", ".yaml", ".yml", ".md", ".sh", ".txt", ".html", ".css"}
+	for _, e := range validExts {
+		if ext == e {
+			return true
+		}
+	}
+	return false
+}
+
+// collectFencedBlock extracts content between ``` fences from a slice of lines.
+func collectFencedBlock(lines []string) (string, bool) {
+	// Skip the opening fence (may include language hint)
+	if len(lines) == 0 {
+		return "", false
+	}
+	first := strings.TrimSpace(lines[0])
+	if !strings.HasPrefix(first, "```") {
+		return "", false
+	}
+	var buf strings.Builder
+	for _, l := range lines[1:] {
+		if strings.TrimSpace(l) == "```" {
+			return buf.String(), true
+		}
+		buf.WriteString(l)
+		buf.WriteByte('\n')
+	}
+	return "", false
 }
 
 func truncateStr(s string, max int) string {
