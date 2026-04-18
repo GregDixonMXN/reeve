@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -93,16 +95,22 @@ type SandboxSection struct {
 func Load(path string) (*AppConfig, error) {
 	cfg := Defaults()
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cfg, nil
+	if data, err := os.ReadFile(path); err == nil {
+		if _, err := toml.Decode(string(data), cfg); err != nil {
+			return nil, err
+		}
 	}
 
-	if _, err := toml.Decode(string(data), cfg); err != nil {
-		return nil, err
+	localPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".local" + filepath.Ext(path)
+	if data, err := os.ReadFile(localPath); err == nil {
+		if _, err := toml.Decode(string(data), cfg); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", localPath, err)
+		}
 	}
 
-	// Auto-detect project root from config file location if not set
+	applyEnvOverrides(cfg)
+	sanitizeConfig(cfg)
+
 	if cfg.Model.ProjectRoot == "" {
 		absPath, err := filepath.Abs(path)
 		if err == nil {
@@ -111,6 +119,54 @@ func Load(path string) (*AppConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func applyEnvOverrides(cfg *AppConfig) {
+	if v := os.Getenv("AXIOM_ANTHROPIC_KEY"); v != "" {
+		cfg.Cloud.AnthropicKey = v
+	}
+	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" && cfg.Cloud.AnthropicKey == "" {
+		cfg.Cloud.AnthropicKey = v
+	}
+	if v := os.Getenv("AXIOM_GEMINI_KEY"); v != "" {
+		cfg.Cloud.GeminiKey = v
+	}
+	if v := os.Getenv("GEMINI_API_KEY"); v != "" && cfg.Cloud.GeminiKey == "" {
+		cfg.Cloud.GeminiKey = v
+	}
+	if v := os.Getenv("GOOGLE_API_KEY"); v != "" && cfg.Cloud.GeminiKey == "" {
+		cfg.Cloud.GeminiKey = v
+	}
+	if v := os.Getenv("AXIOM_WOLFRAM_APP_ID"); v != "" {
+		cfg.Tools.WolframAppID = v
+	}
+	if v := os.Getenv("WOLFRAM_APP_ID"); v != "" && cfg.Tools.WolframAppID == "" {
+		cfg.Tools.WolframAppID = v
+	}
+}
+
+func sanitizeConfig(cfg *AppConfig) {
+	if cfg.Model.MaxIterations <= 0 {
+		cfg.Model.MaxIterations = 0
+	} else if cfg.Model.MaxIterations > 200 {
+		cfg.Model.MaxIterations = 200
+	}
+
+	if cfg.Model.RunnerTimeout <= 0 {
+		cfg.Model.RunnerTimeout = 120
+	}
+	if cfg.Cloud.TimeoutSec <= 0 {
+		cfg.Cloud.TimeoutSec = 120
+	}
+	if cfg.Tools.MaxExecTimeSec <= 0 {
+		cfg.Tools.MaxExecTimeSec = 30
+	}
+	if cfg.Security.Sandbox.TimeoutSec <= 0 {
+		cfg.Security.Sandbox.TimeoutSec = 30
+	}
+	if cfg.Security.Sandbox.MaxOutputBytes <= 0 {
+		cfg.Security.Sandbox.MaxOutputBytes = 65536
+	}
 }
 
 func Defaults() *AppConfig {

@@ -319,9 +319,9 @@ func (r *Registry) registerBuiltins() {
 		r.static["execute_code"] = staticTool{
 			def: models.ToolDefinition{
 				Name: "execute_code",
-				Description: `Execute a shell command in a sandboxed directory. Returns stdout, stderr, and exit code.
-Use this to run code, build projects, run tests. If code fails, read the error, fix with write_file, run again.`,
-				ArgsSchema: `{"command": "string", "dir": "string (working directory)"}`,
+				Description: `Execute a single binary command in a sandboxed directory. Returns stdout, stderr, and exit code.
+Use this to run code, build projects, and run tests. Shell chaining, pipes, redirects, and subshells are intentionally blocked.`,
+				ArgsSchema: `{"command": "string (single command, no shell operators)", "dir": "string (absolute working directory)"}`,
 			},
 			fn: r.executeCode,
 		}
@@ -352,7 +352,7 @@ Use this to run code, build projects, run tests. If code fails, read the error, 
 		def: models.ToolDefinition{
 			Name:        "git_ops",
 			Description: "Run git operations in a project directory. Actions: status, diff, log, add, commit, push, branch, checkout",
-			ArgsSchema:  `{"action": "string (status|diff|log|add|commit|push|branch|checkout)", "args": "string (optional)", "cwd": "string (project directory)"}`,
+			ArgsSchema:  `{"action": "string (status|diff|log|add|commit|push|branch|checkout)", "args": "string (optional)", "cwd": "string (absolute project directory)"}`,
 		},
 		runtime: "python",
 		script:  "scripts/git_ops.py",

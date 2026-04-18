@@ -1,8 +1,6 @@
-# ─── Axiom Configuration ─────────────────────────────────────────────────────
-# Commit-safe base config. Put secrets and machine-specific overrides in
-# axiom.local.toml or environment variables.
+# ─── Axiom Configuration (example) ───────────────────────────────────────────
 
-log_level = "debug"
+log_level = "info"
 
 [database]
 path       = "axiom_memory.db"

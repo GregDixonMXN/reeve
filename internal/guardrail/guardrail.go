@@ -3,6 +3,7 @@ package guardrail
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"axiom/internal/config"
@@ -39,27 +40,67 @@ func (g *Guard) Check(call *models.ToolCall) error {
 		}
 	}
 
-	// Check arguments for blocked patterns
 	for key, val := range call.Args {
 		strVal, ok := val.(string)
 		if !ok {
 			continue
 		}
+		normalized := strings.ToLower(strings.TrimSpace(strVal))
 		for _, blocked := range g.cfg.BlockedCommands {
-			if strings.Contains(strings.ToLower(strVal), strings.ToLower(blocked)) {
+			if strings.Contains(normalized, strings.ToLower(blocked)) {
 				return fmt.Errorf("blocked pattern '%s' in argument '%s'", blocked, key)
 			}
 		}
+		if strings.Contains(normalized, "../") || strings.Contains(normalized, "~/.ssh") || strings.Contains(normalized, "/etc/") {
+			return fmt.Errorf("suspicious path or system access pattern in argument '%s'", key)
+		}
 	}
 
-	// Block network tools if disabled
+	if err := g.validateToolSemantics(call); err != nil {
+		return err
+	}
+
 	if !g.cfg.AllowNetwork {
-		networkTools := map[string]bool{"wolfram": true, "http_request": true}
+		networkTools := map[string]bool{"wolfram": true, "http_request": true, "web_search": true, "web_scrape": true}
 		if networkTools[call.Name] {
 			return fmt.Errorf("tool '%s' needs network access (disabled in config)", call.Name)
 		}
 	}
 
+	return nil
+}
+
+func (g *Guard) validateToolSemantics(call *models.ToolCall) error {
+	switch call.Name {
+	case "write_file", "edit_file", "read_file":
+		path, _ := call.Args["path"].(string)
+		if path == "" {
+			return nil
+		}
+		clean := filepath.Clean(path)
+		if !filepath.IsAbs(clean) {
+			return fmt.Errorf("tool '%s' requires an absolute path", call.Name)
+		}
+	case "execute_code":
+		command, _ := call.Args["command"].(string)
+		dir, _ := call.Args["dir"].(string)
+		if strings.TrimSpace(command) == "" {
+			return fmt.Errorf("execute_code requires a non-empty command")
+		}
+		if !filepath.IsAbs(filepath.Clean(dir)) {
+			return fmt.Errorf("execute_code requires an absolute working directory")
+		}
+		for _, token := range []string{"&&", "||", ";", "|", "$(", "`"} {
+			if strings.Contains(command, token) {
+				return fmt.Errorf("execute_code command contains unsafe shell operator '%s'", token)
+			}
+		}
+	case "git_ops":
+		cwd, _ := call.Args["cwd"].(string)
+		if cwd != "" && !filepath.IsAbs(filepath.Clean(cwd)) {
+			return fmt.Errorf("git_ops requires an absolute cwd")
+		}
+	}
 	return nil
 }
 

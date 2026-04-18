@@ -174,12 +174,16 @@ func (s *Sandbox) Execute(ctx context.Context, command, dir string) *ExecuteResu
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Build the command — use shell to support pipes and redirects
+	parts := strings.Fields(strings.TrimSpace(command))
+	if len(parts) == 0 {
+		return &ExecuteResult{Error: "Empty command"}
+	}
+
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(execCtx, "cmd", "/C", command)
+		cmd = exec.CommandContext(execCtx, parts[0], parts[1:]...)
 	} else {
-		cmd = exec.CommandContext(execCtx, "sh", "-c", command)
+		cmd = exec.CommandContext(execCtx, parts[0], parts[1:]...)
 	}
 
 	cmd.Dir = realDir

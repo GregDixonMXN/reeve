@@ -3,7 +3,6 @@ package main
 import (
 	"axiom/internal/orchestrator"
 	"context"
-	"fmt"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -56,9 +55,6 @@ func (a *App) SendMessage(conversationID, message string) (map[string]interface{
 // app.go
 
 func (a *App) SetMode(mode string) error {
-	// Add this loud print statement:
-	fmt.Printf("🔄 [SYSTEM] UI requested mode switch to: %s\n", mode)
-
 	err := a.modeManager.SetMode(orchestrator.Mode(mode))
 	if err != nil {
 		return err
