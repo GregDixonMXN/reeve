@@ -175,7 +175,7 @@ func (hr *HybridRunner) Complete(ctx context.Context, prompt string, maxTokens i
 }
 
 // CompleteWithTools routes and dispatches with tool support.
-// systemContext is the system prompt + repo/tools/memory block;
+// systemContext is the system prompt plus repo and memory context;
 // messages is the structured conversation history.
 func (hr *HybridRunner) CompleteWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
 	return hr.completeWithToolsForConversation(ctx, "", systemContext, messages, maxTokens, tools)
@@ -238,6 +238,7 @@ func (hr *HybridRunner) completeWithToolsForConversation(
 		return tar.CompleteWithTools(ctx, effectiveSystem, messages, maxTokens, effectiveTools)
 	}
 	// Fallback: flatten to a single prompt
+	effectiveSystem = appendTextualToolListing(effectiveSystem, effectiveTools)
 	prompt := effectiveSystem + "\n"
 	for _, msg := range messages {
 		prompt += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)

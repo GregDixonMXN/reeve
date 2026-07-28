@@ -121,7 +121,8 @@ func (s *StreamingRunner) Complete(ctx context.Context, prompt string, maxTokens
 }
 
 // CompleteWithTools sends a streaming chat request to Ollama with native tool definitions.
-// systemContext is the system prompt + repo tree + tools schema block.
+// systemContext is the system prompt plus repo and memory context. Native tool
+// names, descriptions, and schemas arrive separately in tools.
 // messages is the structured conversation history for proper multi-turn Ollama chat.
 func (s *StreamingRunner) CompleteWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
 	if s.protocol != ProtocolOllama || len(tools) == 0 {

@@ -130,11 +130,13 @@ func (r *RemoteRunner) Complete(ctx context.Context, prompt string, maxTokens in
 }
 
 // CompleteWithTools sends a chat request to Ollama with native tool definitions.
-// systemContext is the system prompt + repo tree + tools schema block.
+// systemContext is the system prompt plus repo and memory context. Native tool
+// names, descriptions, and schemas arrive separately in tools.
 // messages is the structured conversation history passed as proper multi-turn turns.
 func (r *RemoteRunner) CompleteWithTools(ctx context.Context, systemContext string, messages []models.Message, maxTokens int, tools []models.ToolDefinition) (string, error) {
 	if r.protocol != ProtocolOllama {
 		// OpenAI-compatible completion servers do not expose Ollama's chat API.
+		systemContext = appendFallbackToolListing(systemContext, tools)
 		prompt := systemContext + "\n"
 		for _, msg := range messages {
 			prompt += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)
@@ -142,6 +144,19 @@ func (r *RemoteRunner) CompleteWithTools(ctx context.Context, systemContext stri
 		return r.Complete(ctx, prompt, maxTokens)
 	}
 	return r.chatOllama(ctx, buildOllamaChatMessages(systemContext, messages), maxTokens, tools, "", false, 0)
+}
+
+func appendFallbackToolListing(systemContext string, tools []models.ToolDefinition) string {
+	if len(tools) == 0 {
+		return systemContext
+	}
+
+	var listing strings.Builder
+	listing.WriteString("\nAVAILABLE TOOLS:\n")
+	for _, tool := range tools {
+		fmt.Fprintf(&listing, "- %s: %s\n  Args: %s\n", tool.Name, tool.Description, tool.SchemaJSON())
+	}
+	return systemContext + listing.String()
 }
 
 // CompleteWithToolsForConversation preserves Ollama's native assistant

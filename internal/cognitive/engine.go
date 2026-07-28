@@ -103,25 +103,21 @@ func (e *Engine) Generate(ctx context.Context, req Request) (*Response, error) {
 		return nil, fmt.Errorf("cognitive engine: no LLM runner configured (call SetRunner first)")
 	}
 
-	prompt := e.buildPrompt(req)
-
 	// If the runner supports native messages/tool calling, pass structured
 	// context even when this request has no tools (planning and reflection still
 	// benefit from real system/user roles).
-	var raw string
-	var err error
-	if ctar, ok := e.runner.(ConversationToolAwareRunner); ok && req.ConversationID != "" {
-		raw, err = ctar.CompleteWithToolsForConversation(
-			ctx,
-			req.ConversationID,
-			e.buildSystemSection(req),
-			req.Messages,
-			e.cfg.MaxOutputTokens,
-			req.Tools,
-		)
-	} else if tar, ok := e.runner.(ToolAwareRunner); ok {
-		raw, err = tar.CompleteWithTools(ctx, e.buildSystemSection(req), req.Messages, e.cfg.MaxOutputTokens, req.Tools)
+	var (
+		raw          string
+		prompt       string
+		nativeSystem string
+		usedNative   bool
+		err          error
+	)
+	if _, ok := e.runner.(ToolAwareRunner); ok {
+		nativeSystem = e.buildNativeSystemSection(req)
+		raw, usedNative, err = e.completeNative(ctx, req, nativeSystem)
 	} else {
+		prompt = e.buildPrompt(req)
 		raw, err = e.runner.Complete(ctx, prompt, e.cfg.MaxOutputTokens)
 	}
 	if err != nil {
@@ -142,14 +138,24 @@ func (e *Engine) Generate(ctx context.Context, req Request) (*Response, error) {
 		cleaned := cleanJSON(textForJSON)
 		var probe structuredOutput
 		if json.Unmarshal([]byte(cleaned), &probe) != nil {
-			// JSON parse failed — retry once with an explicit correction prompt.
-			retryPrompt := prompt +
-				fmt.Sprintf("<|assistant|>\n%s\n<|end|>\n", raw) +
-				"<|user|>\nYour last response was not valid JSON. You MUST respond with ONLY " +
-				"a single valid JSON object and nothing else — no markdown, no code fences, " +
-				"no text outside the braces. Required format:\n" +
-				`{"reasoning":"...","tool_call":null,"content":"..."}` + "\n<|end|>\n<|assistant|>\n"
-			raw2, err2 := e.runner.Complete(ctx, retryPrompt, e.cfg.MaxOutputTokens)
+			// JSON parse failed — retry once. Keep native runners on the same
+			// structured provider/conversation path so hybrid routing, tool
+			// filtering, and opaque provider replay state remain intact.
+			var raw2 string
+			var err2 error
+			if usedNative {
+				raw2, _, err2 = e.completeNative(
+					ctx,
+					req,
+					nativeJSONCorrectionInstruction()+nativeSystem,
+				)
+			} else {
+				retryPrompt := prompt +
+					fmt.Sprintf("<|assistant|>\n%s\n<|end|>\n", raw) +
+					"<|user|>\n" + jsonCorrectionInstruction() +
+					"\n<|end|>\n<|assistant|>\n"
+				raw2, err2 = e.runner.Complete(ctx, retryPrompt, e.cfg.MaxOutputTokens)
+			}
 			if err2 == nil {
 				if resp2, err3 := e.parseResponse(raw2); err3 == nil &&
 					(resp2.ToolCall != nil || resp2.Content != "") {
@@ -160,6 +166,46 @@ func (e *Engine) Generate(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	return resp, nil
+}
+
+func (e *Engine) completeNative(
+	ctx context.Context,
+	req Request,
+	systemContext string,
+) (string, bool, error) {
+	if ctar, ok := e.runner.(ConversationToolAwareRunner); ok && req.ConversationID != "" {
+		raw, err := ctar.CompleteWithToolsForConversation(
+			ctx,
+			req.ConversationID,
+			systemContext,
+			req.Messages,
+			e.cfg.MaxOutputTokens,
+			req.Tools,
+		)
+		return raw, true, err
+	}
+	if tar, ok := e.runner.(ToolAwareRunner); ok {
+		raw, err := tar.CompleteWithTools(
+			ctx,
+			systemContext,
+			req.Messages,
+			e.cfg.MaxOutputTokens,
+			req.Tools,
+		)
+		return raw, true, err
+	}
+	return "", false, nil
+}
+
+func jsonCorrectionInstruction() string {
+	return "Your last response was not valid JSON. You MUST respond with ONLY " +
+		"a single valid JSON object and nothing else — no markdown, no code fences, " +
+		"no text outside the braces. Required format:\n" +
+		`{"reasoning":"...","tool_call":null,"content":"..."}`
+}
+
+func nativeJSONCorrectionInstruction() string {
+	return "FORMAT CORRECTION:\n" + jsonCorrectionInstruction() + "\n\n"
 }
 
 // loadUserContextFile reads AXIOM.md from the project root (if it exists) and
@@ -264,10 +310,22 @@ RESPONSE FORMAT:
 }`
 }
 
-// buildSystemSection returns the system prompt + repo tree + tools + memory block,
-// without conversation history. Used by ToolAwareRunner so the chat API can
-// receive a proper system message alongside structured multi-turn history.
+// buildSystemSection returns the complete textual system section used by flat
+// prompt paths. Tool schemas stay in this representation because non-native
+// runners have no separate tools parameter.
 func (e *Engine) buildSystemSection(req Request) string {
+	return e.buildSystemSectionWithToolListing(req, true)
+}
+
+// buildNativeSystemSection returns the system section for runners with native
+// tool calling. Their structured tools parameter is the single source of tool
+// names, descriptions, and schemas, so repeating it in the system text only
+// wastes context and can give the model conflicting tool instructions.
+func (e *Engine) buildNativeSystemSection(req Request) string {
+	return e.buildSystemSectionWithToolListing(req, false)
+}
+
+func (e *Engine) buildSystemSectionWithToolListing(req Request, includeToolListing bool) string {
 	section := buildSystemPrompt(e.mode) + "\n"
 
 	// Current date/time — injected so the LLM never has to guess or estimate
@@ -294,11 +352,8 @@ func (e *Engine) buildSystemSection(req Request) string {
 		section += repoTree + "\n"
 	}
 
-	if len(req.Tools) > 0 {
-		section += "\nAVAILABLE TOOLS:\n"
-		for _, t := range req.Tools {
-			section += fmt.Sprintf("- %s: %s\n  Args: %s\n", t.Name, t.Description, t.SchemaJSON())
-		}
+	if includeToolListing && len(req.Tools) > 0 {
+		section += textualToolListing(req.Tools)
 	}
 
 	if len(req.MemoryContext) > 0 {
@@ -319,6 +374,23 @@ func (e *Engine) buildSystemSection(req Request) string {
 	}
 
 	return section
+}
+
+func textualToolListing(tools []models.ToolDefinition) string {
+	if len(tools) == 0 {
+		return ""
+	}
+
+	var listing strings.Builder
+	listing.WriteString("\nAVAILABLE TOOLS:\n")
+	for _, tool := range tools {
+		fmt.Fprintf(&listing, "- %s: %s\n  Args: %s\n", tool.Name, tool.Description, tool.SchemaJSON())
+	}
+	return listing.String()
+}
+
+func appendTextualToolListing(systemContext string, tools []models.ToolDefinition) string {
+	return systemContext + textualToolListing(tools)
 }
 
 func (e *Engine) buildPrompt(req Request) string {

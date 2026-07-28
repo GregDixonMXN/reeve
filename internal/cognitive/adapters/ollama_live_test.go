@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,8 @@ import (
 // Run explicitly with:
 //
 //	AXIOM_OLLAMA_LIVE=1 go test ./internal/cognitive/adapters -run TestLiveOllamaNativeToolLoop -v
+//	AXIOM_OLLAMA_LIVE=1 AXIOM_OLLAMA_MODEL=qwen3.5:9b-q4_K_M AXIOM_OLLAMA_CONTEXT=16384 \
+//	  go test ./internal/cognitive/adapters -run TestLiveOllamaNativeToolLoop -v
 func TestLiveOllamaNativeToolLoop(t *testing.T) {
 	if os.Getenv("AXIOM_OLLAMA_LIVE") != "1" {
 		t.Skip("set AXIOM_OLLAMA_LIVE=1 to run against the configured local Ollama server")
@@ -27,13 +30,21 @@ func TestLiveOllamaNativeToolLoop(t *testing.T) {
 	if model == "" {
 		model = "qwen3.6:27b-mtp-q4_K_M"
 	}
+	contextSize := 65536
+	if raw := os.Getenv("AXIOM_OLLAMA_CONTEXT"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			t.Fatalf("AXIOM_OLLAMA_CONTEXT must be a positive integer, got %q", raw)
+		}
+		contextSize = value
+	}
 
 	runner := NewRemoteRunner(RemoteRunnerConfig{
 		BaseURL:         baseURL,
 		Model:           model,
 		Protocol:        ProtocolOllama,
 		TimeoutS:        600,
-		ContextSize:     65536,
+		ContextSize:     contextSize,
 		Temperature:     0.6,
 		TopP:            0.95,
 		TopK:            20,
