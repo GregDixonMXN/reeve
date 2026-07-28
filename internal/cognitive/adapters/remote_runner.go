@@ -26,6 +26,12 @@ const (
 	defaultRemoteTopP        = 0.9
 	defaultRemoteRepeat      = 1.0
 	ollamaPendingStateTTL    = 10 * time.Minute
+	// Tokenization varies by model and content. Two bytes per token deliberately
+	// overestimates English source code and JSON-heavy native tool schemas.
+	ollamaEstimatedBytesPerToken = 2
+	// Leave room for chat-template variance and tokenizer estimation error in
+	// addition to the explicit generation reserve.
+	ollamaPromptSafetyTokens = 768
 )
 
 type RemoteRunnerConfig struct {
@@ -259,11 +265,12 @@ type legacyOllamaToolCall = struct {
 }
 
 type ollamaChatMsg struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	Thinking  string           `json:"thinking,omitempty"`
-	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
-	ToolName  string           `json:"tool_name,omitempty"`
+	Role                string           `json:"role"`
+	Content             string           `json:"content"`
+	Thinking            string           `json:"thinking,omitempty"`
+	ToolCalls           []ollamaToolCall `json:"tool_calls,omitempty"`
+	ToolName            string           `json:"tool_name,omitempty"`
+	SyntheticToolResult bool             `json:"-"`
 }
 
 type ollamaChatResponseMessage struct {
@@ -306,8 +313,11 @@ func (m ollamaChatResponseMessage) nativeMessage() ollamaChatMsg {
 }
 
 type ollamaChatResp struct {
-	Message ollamaChatResponseMessage `json:"message"`
-	Done    bool                      `json:"done"`
+	Message         ollamaChatResponseMessage `json:"message"`
+	Done            bool                      `json:"done"`
+	DoneReason      string                    `json:"done_reason,omitempty"`
+	PromptEvalCount int                       `json:"prompt_eval_count,omitempty"`
+	EvalCount       int                       `json:"eval_count,omitempty"`
 }
 
 func (r *RemoteRunner) chatOllama(
@@ -320,42 +330,47 @@ func (r *RemoteRunner) chatOllama(
 	epoch uint64,
 ) (string, error) {
 	ollamaTools := convertToOllamaTools(tools)
-	think := r.think
-
-	body, err := json.Marshal(ollamaChatReq{
-		Model:    r.model,
-		Messages: chatMessages,
-		Stream:   false,
-		Think:    &think,
-		Tools:    ollamaTools,
-		Options:  r.ollamaOptions(maxTokens),
-	})
+	compactedMessages, err := compactOllamaChatMessages(
+		chatMessages,
+		ollamaTools,
+		r.contextSize,
+		maxTokens,
+	)
 	if err != nil {
 		return "", err
 	}
+	chatMessages = compactedMessages
 
-	req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/api/chat", bytes.NewReader(body))
+	result, err := r.requestOllamaChat(ctx, chatMessages, maxTokens, ollamaTools, r.think)
 	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama unreachable at %s — is it running? %w", r.baseURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, string(b))
-	}
-
-	var result ollamaChatResp
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
 	nativeMessage := result.Message.nativeMessage()
+
+	// Thinking-capable models can consume the entire generation allowance
+	// without ever reaching assistant content or a tool call. Retry once with
+	// thinking disabled and an explicit recovery instruction. The request is
+	// side-effect free until a tool call is returned, so this cannot duplicate
+	// tool execution.
+	if len(nativeMessage.ToolCalls) == 0 &&
+		strings.TrimSpace(nativeMessage.Content) == "" &&
+		strings.EqualFold(strings.TrimSpace(result.DoneReason), "length") {
+		chatMessages = appendOllamaBudgetRecovery(chatMessages)
+		chatMessages, err = compactOllamaChatMessages(
+			chatMessages,
+			ollamaTools,
+			r.contextSize,
+			maxTokens,
+		)
+		if err != nil {
+			return "", fmt.Errorf("ollama output-budget recovery could not fit its prompt: %w", err)
+		}
+		result, err = r.requestOllamaChat(ctx, chatMessages, maxTokens, ollamaTools, false)
+		if err != nil {
+			return "", fmt.Errorf("ollama output-budget recovery failed: %w", err)
+		}
+		nativeMessage = result.Message.nativeMessage()
+	}
 
 	if len(nativeMessage.ToolCalls) > 1 {
 		if trackPending {
@@ -422,9 +437,459 @@ func (r *RemoteRunner) chatOllama(
 		r.clearPending(conversationID, epoch)
 	}
 	if strings.TrimSpace(nativeMessage.Content) == "" {
-		return "", fmt.Errorf("ollama response contained no assistant content or function call")
+		if strings.EqualFold(strings.TrimSpace(result.DoneReason), "length") {
+			return "", fmt.Errorf(
+				"ollama exhausted its output budget after %d generated tokens without assistant content or a function call; increase model.max_output_tokens or disable model.enable_thinking",
+				result.EvalCount,
+			)
+		}
+		if strings.TrimSpace(nativeMessage.Thinking) != "" {
+			return "", fmt.Errorf(
+				"ollama returned reasoning but no assistant content or function call (done_reason=%q)",
+				result.DoneReason,
+			)
+		}
+		return "", fmt.Errorf(
+			"ollama response contained no assistant content or function call (done_reason=%q)",
+			result.DoneReason,
+		)
 	}
 	return normalizeNativeMessage(nativeMessage.Content, nativeMessage.Thinking), nil
+}
+
+func (r *RemoteRunner) requestOllamaChat(
+	ctx context.Context,
+	chatMessages []ollamaChatMsg,
+	maxTokens int,
+	ollamaTools []ollamaTool,
+	think bool,
+) (ollamaChatResp, error) {
+	body, err := json.Marshal(ollamaChatReq{
+		Model:    r.model,
+		Messages: chatMessages,
+		Stream:   false,
+		Think:    &think,
+		Tools:    ollamaTools,
+		Options:  r.ollamaOptions(maxTokens),
+	})
+	if err != nil {
+		return ollamaChatResp{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return ollamaChatResp{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return ollamaChatResp{}, fmt.Errorf("ollama unreachable at %s — is it running? %w", r.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return ollamaChatResp{}, fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, string(b))
+	}
+
+	var result ollamaChatResp
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ollamaChatResp{}, err
+	}
+	return result, nil
+}
+
+func appendOllamaBudgetRecovery(messages []ollamaChatMsg) []ollamaChatMsg {
+	recovered := cloneOllamaChatMessages(messages)
+	const instruction = "\n\nOUTPUT BUDGET RECOVERY: Your previous attempt ended before producing " +
+		"assistant content or a function call. Do not narrate internal reasoning. " +
+		"Respond immediately with the next function call, or a concise final answer."
+	if len(recovered) > 0 && recovered[0].Role == models.RoleSystem {
+		recovered[0].Content += instruction
+		return recovered
+	}
+	return append(
+		[]ollamaChatMsg{{Role: models.RoleSystem, Content: strings.TrimSpace(instruction)}},
+		recovered...,
+	)
+}
+
+// compactOllamaChatMessages bounds the complete native chat payload rather
+// than merely counting turns. It reserves maxTokens for generation, accounts
+// for native tool schemas, preserves the latest user turn or native
+// assistant/tool pair, and stores only this compacted input for pending replay.
+func compactOllamaChatMessages(
+	messages []ollamaChatMsg,
+	tools []ollamaTool,
+	contextSize int,
+	maxTokens int,
+) ([]ollamaChatMsg, error) {
+	if contextSize <= 0 || len(messages) == 0 {
+		return messages, nil
+	}
+
+	generationReserve := maxTokens
+	if generationReserve <= 0 {
+		generationReserve = min(1024, max(1, contextSize/4))
+	}
+	promptBudget := contextSize - generationReserve - ollamaPromptSafetyTokens
+	if promptBudget < 256 {
+		return nil, fmt.Errorf(
+			"ollama context_size %d cannot reserve the configured %d output tokens plus prompt safety margin; lower model.max_output_tokens or increase model.context_size",
+			contextSize,
+			generationReserve,
+		)
+	}
+	messageBudget := promptBudget - estimateOllamaToolTokens(tools)
+	if messageBudget < 256 {
+		return nil, fmt.Errorf(
+			"ollama context_size %d is too small for the native tool schemas while reserving %d output tokens; increase model.context_size",
+			contextSize,
+			generationReserve,
+		)
+	}
+	groupStart := 0
+	if messages[0].Role == models.RoleSystem {
+		groupStart = 1
+	}
+	_, malformedProtocol := groupOllamaMessages(messages[groupStart:])
+	if estimateOllamaMessagesTokens(messages) <= messageBudget && !malformedProtocol {
+		return messages, nil
+	}
+
+	start := 0
+	compacted := make([]ollamaChatMsg, 0, len(messages))
+	used := 128 // chat-template prefix/suffix and generation marker
+	if messages[0].Role == models.RoleSystem {
+		system := cloneOllamaChatMessage(messages[0])
+		systemCost := estimateOllamaMessageTokens(system)
+		if used+systemCost > messageBudget {
+			return nil, fmt.Errorf(
+				"ollama context_size %d cannot fit Axiom's system context and native tool schemas while reserving %d output tokens; increase model.context_size",
+				contextSize,
+				generationReserve,
+			)
+		}
+		compacted = append(compacted, system)
+		used += systemCost
+		start = 1
+	}
+
+	const omissionText = "[CONTEXT COMPACTED: older messages were omitted to reserve space for the response.]"
+	omissionCost := estimateOllamaMessageTokens(ollamaChatMsg{
+		Role:    models.RoleSystem,
+		Content: omissionText,
+	})
+	groups, hadOrphan := groupOllamaMessages(messages[start:])
+	if len(groups) == 0 {
+		if hadOrphan {
+			compacted = append(compacted, ollamaChatMsg{
+				Role:    models.RoleSystem,
+				Content: omissionText,
+			})
+		}
+		return compacted, nil
+	}
+	available := messageBudget - used - omissionCost
+	if available < 64 {
+		return nil, fmt.Errorf(
+			"ollama context_size %d leaves no room for the latest user request after system context and tool schemas; increase model.context_size",
+			contextSize,
+		)
+	}
+
+	latestUser := -1
+	latestPair := -1
+	for index, group := range groups {
+		if group.nativeToolPair {
+			latestPair = index
+		}
+		for _, message := range group.messages {
+			if isGenuineOllamaUserMessage(message) {
+				latestUser = index
+			}
+		}
+	}
+
+	pinned := make([]int, 0, 3)
+	addPinned := func(index int) {
+		if index < 0 {
+			return
+		}
+		for _, existing := range pinned {
+			if existing == index {
+				return
+			}
+		}
+		pinned = append(pinned, index)
+	}
+	// Preserve the task before its active tool protocol, then the newest exact
+	// native pair. If neither is last, retain the immediate final turn too.
+	addPinned(latestUser)
+	addPinned(latestPair)
+	addPinned(len(groups) - 1)
+
+	selected := make(map[int][]ollamaChatMsg, len(groups))
+	for _, index := range pinned {
+		group := groups[index]
+		cost := estimateOllamaMessagesTokensWithoutTemplate(group.messages)
+		if index == latestUser && cost > available {
+			return nil, fmt.Errorf(
+				"latest user request needs an estimated %d tokens but only %d remain in Ollama context_size %d; shorten the request or increase model.context_size",
+				cost,
+				available,
+				contextSize,
+			)
+		}
+		fitted, fitCost, err := fitMandatoryOllamaGroup(group, available)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"latest native tool turn cannot fit Ollama context_size %d: %w",
+				contextSize,
+				err,
+			)
+		}
+		selected[index] = fitted
+		available -= fitCost
+	}
+
+	// Fill newest-first using complete groups. Stop at the first group that
+	// does not fit so the retained history remains a contiguous recent window.
+	for index := len(groups) - 1; index >= 0; index-- {
+		if _, exists := selected[index]; exists {
+			continue
+		}
+		cost := estimateOllamaMessagesTokensWithoutTemplate(groups[index].messages)
+		if cost > available {
+			break
+		}
+		selected[index] = cloneOllamaChatMessages(groups[index].messages)
+		available -= cost
+	}
+
+	omitted := hadOrphan || len(selected) < len(groups)
+	if omitted {
+		compacted = append(compacted, ollamaChatMsg{
+			Role:    models.RoleSystem,
+			Content: omissionText,
+		})
+	}
+	for index := range groups {
+		if selectedGroup, exists := selected[index]; exists {
+			compacted = append(compacted, selectedGroup...)
+		}
+	}
+	if estimateOllamaMessagesTokens(compacted) > messageBudget {
+		return nil, fmt.Errorf(
+			"internal Ollama context compaction estimate %d exceeds message budget %d",
+			estimateOllamaMessagesTokens(compacted),
+			messageBudget,
+		)
+	}
+	return compacted, nil
+}
+
+type ollamaMessageGroup struct {
+	messages       []ollamaChatMsg
+	nativeToolPair bool
+}
+
+func groupOllamaMessages(messages []ollamaChatMsg) ([]ollamaMessageGroup, bool) {
+	groups := make([]ollamaMessageGroup, 0, len(messages))
+	hadOrphan := false
+	for index := 0; index < len(messages); index++ {
+		message := messages[index]
+		if message.Role == models.RoleAssistant && len(message.ToolCalls) > 0 {
+			if index+1 < len(messages) && messages[index+1].Role == models.RoleTool {
+				groups = append(groups, ollamaMessageGroup{
+					messages:       cloneOllamaChatMessages(messages[index : index+2]),
+					nativeToolPair: true,
+				})
+				index++
+				continue
+			}
+			hadOrphan = true
+			continue
+		}
+		if message.Role == models.RoleTool {
+			// Never send a native tool result without its assistant tool call.
+			hadOrphan = true
+			continue
+		}
+		groups = append(groups, ollamaMessageGroup{
+			messages: []ollamaChatMsg{cloneOllamaChatMessage(message)},
+		})
+	}
+	return groups, hadOrphan
+}
+
+func isGenuineOllamaUserMessage(message ollamaChatMsg) bool {
+	return message.Role == models.RoleUser && !message.SyntheticToolResult
+}
+
+func fitMandatoryOllamaGroup(
+	group ollamaMessageGroup,
+	tokenBudget int,
+) ([]ollamaChatMsg, int, error) {
+	full := cloneOllamaChatMessages(group.messages)
+	fullCost := estimateOllamaMessagesTokensWithoutTemplate(full)
+	if fullCost <= tokenBudget {
+		return full, fullCost, nil
+	}
+	if !group.nativeToolPair {
+		if len(full) == 1 {
+			fitted := []ollamaChatMsg{
+				truncateOllamaMessage(full[0], tokenBudget),
+			}
+			cost := estimateOllamaMessagesTokensWithoutTemplate(fitted)
+			if cost <= tokenBudget {
+				return fitted, cost, nil
+			}
+		}
+		return nil, 0, fmt.Errorf(
+			"mandatory message needs an estimated %d tokens, only %d remain",
+			fullCost,
+			tokenBudget,
+		)
+	}
+	if len(full) != 2 {
+		return nil, 0, fmt.Errorf("native tool group has %d messages, want 2", len(full))
+	}
+
+	assistant := full[0]
+	toolResult := full[1]
+	minAssistant := assistant
+	minAssistant.Content = ""
+	minAssistant.Thinking = ""
+	minTool := toolResult
+	minTool.Content = ""
+	minimum := estimateOllamaMessagesTokensWithoutTemplate(
+		[]ollamaChatMsg{minAssistant, minTool},
+	)
+	if minimum > tokenBudget {
+		return nil, 0, fmt.Errorf(
+			"untruncated function name and arguments need an estimated %d tokens, only %d remain",
+			minimum,
+			tokenBudget,
+		)
+	}
+
+	remaining := tokenBudget - minimum
+	assistantExtra := min(remaining/4, max(0, estimateOllamaMessageTokens(assistant)-estimateOllamaMessageTokens(minAssistant)))
+	assistantBudget := estimateOllamaMessageTokens(minAssistant) + assistantExtra
+	toolBudget := tokenBudget - assistantBudget
+	assistant = truncateOllamaMessage(assistant, assistantBudget)
+	toolResult = truncateOllamaMessage(toolResult, toolBudget)
+	fitted := []ollamaChatMsg{assistant, toolResult}
+	cost := estimateOllamaMessagesTokensWithoutTemplate(fitted)
+	if cost > tokenBudget {
+		return nil, 0, fmt.Errorf(
+			"compacted native pair estimate %d exceeds its %d-token budget",
+			cost,
+			tokenBudget,
+		)
+	}
+	return fitted, cost, nil
+}
+
+func estimateOllamaToolTokens(tools []ollamaTool) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	encoded, err := json.Marshal(tools)
+	if err != nil {
+		return len(tools) * 128
+	}
+	return estimateOllamaBytesTokens(len(encoded)) + 32 + len(tools)*8
+}
+
+func estimateOllamaMessagesTokens(messages []ollamaChatMsg) int {
+	total := 128 // chat-template prefix/suffix and generation marker
+	return total + estimateOllamaMessagesTokensWithoutTemplate(messages)
+}
+
+func estimateOllamaMessagesTokensWithoutTemplate(messages []ollamaChatMsg) int {
+	total := 0
+	for _, message := range messages {
+		total += estimateOllamaMessageTokens(message)
+	}
+	return total
+}
+
+func estimateOllamaMessageTokens(message ollamaChatMsg) int {
+	size := len(message.Content) + len(message.Thinking) + len(message.ToolName)
+	if len(message.ToolCalls) > 0 {
+		if encoded, err := json.Marshal(message.ToolCalls); err == nil {
+			size += len(encoded)
+		}
+	}
+	return 12 + estimateOllamaBytesTokens(size)
+}
+
+func estimateOllamaBytesTokens(size int) int {
+	return (size + ollamaEstimatedBytesPerToken - 1) / ollamaEstimatedBytesPerToken
+}
+
+func truncateOllamaMessage(message ollamaChatMsg, tokenBudget int) ollamaChatMsg {
+	fixedSize := len(message.ToolName)
+	if len(message.ToolCalls) > 0 {
+		if encoded, err := json.Marshal(message.ToolCalls); err == nil {
+			fixedSize += len(encoded)
+		}
+	}
+	contentBytes := max(
+		0,
+		(tokenBudget-12)*ollamaEstimatedBytesPerToken-fixedSize,
+	)
+	if len(message.Thinking) > 0 {
+		thinkingBytes := min(len(message.Thinking), contentBytes/3)
+		message.Thinking = compactUTF8(message.Thinking, thinkingBytes)
+		contentBytes -= len(message.Thinking)
+	}
+	message.Content = compactUTF8(message.Content, contentBytes)
+	return message
+}
+
+func compactUTF8(content string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(content) <= maxBytes {
+		return content
+	}
+	const marker = "\n... [content compacted] ...\n"
+	if maxBytes <= len(marker)+8 {
+		return validUTF8Prefix(content, maxBytes)
+	}
+	available := maxBytes - len(marker)
+	headBytes := available * 2 / 3
+	tailBytes := available - headBytes
+	head := validUTF8Prefix(content, headBytes)
+	tail := validUTF8Suffix(content, tailBytes)
+	return head + marker + tail
+}
+
+func validUTF8Prefix(content string, maxBytes int) string {
+	if maxBytes >= len(content) {
+		return content
+	}
+	end := max(0, maxBytes)
+	for end > 0 && end < len(content) && (content[end]&0xc0) == 0x80 {
+		end--
+	}
+	return content[:end]
+}
+
+func validUTF8Suffix(content string, maxBytes int) string {
+	if maxBytes >= len(content) {
+		return content
+	}
+	start := max(0, len(content)-maxBytes)
+	for start < len(content) && (content[start]&0xc0) == 0x80 {
+		start++
+	}
+	return content[start:]
 }
 
 func (r *RemoteRunner) ollamaOptions(maxTokens int) map[string]interface{} {
@@ -468,8 +933,9 @@ func buildOllamaChatMessages(systemContext string, messages []models.Message) []
 			// attach. Preserve the output as user context instead of emitting an
 			// invalid, unlinked Ollama tool-result message.
 			chatMessages = append(chatMessages, ollamaChatMsg{
-				Role:    models.RoleUser,
-				Content: "[Tool Result]\n" + msg.Content,
+				Role:                models.RoleUser,
+				Content:             "[Tool Result]\n" + msg.Content,
+				SyntheticToolResult: true,
 			})
 		}
 	}
@@ -583,8 +1049,45 @@ func cloneOllamaChatMessages(messages []ollamaChatMsg) []ollamaChatMsg {
 }
 
 func cloneOllamaChatMessage(message ollamaChatMsg) ollamaChatMsg {
-	message.ToolCalls = append([]ollamaToolCall(nil), message.ToolCalls...)
+	if len(message.ToolCalls) == 0 {
+		return message
+	}
+	cloned := make([]ollamaToolCall, len(message.ToolCalls))
+	for index, call := range message.ToolCalls {
+		cloned[index] = call
+		if call.Function.Index != nil {
+			value := *call.Function.Index
+			cloned[index].Function.Index = &value
+		}
+		if call.Function.Arguments != nil {
+			cloned[index].Function.Arguments = cloneJSONMap(call.Function.Arguments)
+		}
+	}
+	message.ToolCalls = cloned
 	return message
+}
+
+func cloneJSONMap(input map[string]interface{}) map[string]interface{} {
+	output := make(map[string]interface{}, len(input))
+	for key, value := range input {
+		output[key] = cloneJSONValue(value)
+	}
+	return output
+}
+
+func cloneJSONValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneJSONMap(typed)
+	case []interface{}:
+		cloned := make([]interface{}, len(typed))
+		for index, item := range typed {
+			cloned[index] = cloneJSONValue(item)
+		}
+		return cloned
+	default:
+		return value
+	}
 }
 
 func nativeToolReasoning(thinking, content string) string {
