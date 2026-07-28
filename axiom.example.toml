@@ -4,34 +4,50 @@ log_level = "info"
 
 [database]
 path       = "axiom_memory.db"
+# Encryption is not available in this build; setting this true fails closed.
 encrypted  = false
 passphrase = ""
 vec_dim    = 768
 
 [model]
+# Local Qwen handles private/offline work. Hybrid mode automatically routes
+# complex turns to OpenAI when AXIOM_OPENAI_API_KEY is configured.
+enabled          = true
 model_path       = ""
-context_size     = 32768
+context_size     = 65536
+max_output_tokens = 8192 # generation cap; separate from the input context window
 quantization     = "q4_k_m"
 gpu_layers       = 0
-threads          = 4
-temperature      = 0.4
-top_p            = 0.9
+threads          = 12
+temperature      = 0.6
+top_p            = 0.95
+top_k            = 20
+min_p            = 0.0
+presence_penalty = 0.0
+repeat_penalty   = 1.0
 runner_type      = "ollama"
 runner_url       = "http://localhost:11434"
-runner_model     = "qwen2.5-coder:32b"
-runner_timeout   = 300
-enable_streaming = true
-default_mode     = "local"
-max_iterations   = 60
+runner_model     = "qwen3.6:27b-mtp-q4_K_M"
+runner_timeout   = 1800
+enable_thinking  = true
+enable_streaming = false
+default_mode     = "hybrid"
+max_iterations   = 30
 
 [embedding]
-enabled  = true
+# Embeddings remain optional; this does not affect local inference.
+enabled  = false
 provider = "ollama"
 model    = "nomic-embed-text"
 url      = "http://localhost:11434"
 dim      = 768
 
 [cloud]
+# Keep the key in AXIOM_OPENAI_API_KEY or OPENAI_API_KEY, never this file.
+provider         = "openai"
+openai_key       = ""
+openai_model     = "gpt-5.6-sol"
+reasoning_effort = "medium"
 anthropic_key   = ""
 anthropic_model = "claude-sonnet-4-5-20250929"
 gemini_key      = ""
@@ -42,19 +58,24 @@ timeout_sec     = 300
 [tools]
 mojo_path        = ""
 mojo_kernels_dir = "mojo/kernels"
-python_path      = ".venv/bin/python"
+python_path      = "~/.axiom/venv/bin/python"
 wolfram_app_id   = ""
 allowed_dirs = ["/home/shki/projects", "/home/shki/Documents", "/home/shki/Desktop"]
 max_exec_time_sec = 300
 max_file_size     = 10485760
+max_output_bytes  = 1048576
 
 [security]
 enable_guardrails = true
 blocked_commands  = ["rm -rf /", "sudo", "mkfs", "dd if="]
+# False disables web/cloud/vision and Git push, restricts model endpoints to
+# loopback, and permits local Git/execute_code only behind enforced OS isolation.
 allow_network     = true
 
 [security.sandbox]
 enabled = true
+# Fail closed if Linux Landlock/seccomp cannot be established.
+require_os_isolation = true
 allowed_dirs    = ["/home/shki/projects", "/home/shki/Documents", "/home/shki/Desktop"]
 blocked_patterns = ["rm -rf", "sudo"]
 allowed_binaries = [
@@ -66,6 +87,12 @@ allowed_binaries = [
 ]
 timeout_sec      = 60
 max_output_bytes = 65536
+# Per-process Linux rlimits; wall-clock timeout still kills the whole process group.
+cpu_time_sec       = 60
+max_memory_bytes   = 8589934592
+max_processes      = 1024
+max_file_size_bytes = 1073741824
+max_open_files     = 1024
 
 [reflection]
 enabled = true

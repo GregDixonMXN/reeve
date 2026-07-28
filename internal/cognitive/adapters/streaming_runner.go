@@ -20,19 +20,79 @@ type TokenCallback func(token string)
 // It implements cognitive.LLMRunner for the non-streaming interface,
 // and adds StreamComplete for token-by-token output.
 type StreamingRunner struct {
-	baseURL  string
-	model    string
-	protocol Protocol
-	client   *http.Client
-	onToken  TokenCallback
+	baseURL     string
+	model       string
+	protocol    Protocol
+	client      *http.Client
+	onToken     TokenCallback
+	contextSize int
 }
 
 type StreamingRunnerConfig struct {
-	BaseURL  string
-	Model    string
-	Protocol Protocol
-	TimeoutS int
-	OnToken  TokenCallback // Called for each streamed token
+	BaseURL     string
+	Model       string
+	Protocol    Protocol
+	TimeoutS    int
+	OnToken     TokenCallback // Called for each streamed token
+	ContextSize int
+}
+
+type safeStreamEmitter struct {
+	callback TokenCallback
+	buffer   strings.Builder
+	mode     uint8 // 0 undecided, 1 plain text, 2 structured/protocol output
+}
+
+func (e *safeStreamEmitter) Write(chunk string) {
+	if chunk == "" || e.callback == nil {
+		return
+	}
+	if e.mode == 1 {
+		e.callback(chunk)
+		return
+	}
+	e.buffer.WriteString(chunk)
+	if e.mode == 2 {
+		return
+	}
+	trimmed := strings.TrimSpace(e.buffer.String())
+	if trimmed == "" {
+		return
+	}
+	switch trimmed[0] {
+	case '{', '[', '`', '<':
+		e.mode = 2
+	default:
+		e.mode = 1
+		e.callback(e.buffer.String())
+		e.buffer.Reset()
+	}
+}
+
+func (e *safeStreamEmitter) Finish(allowOutput bool) {
+	if e.callback == nil || !allowOutput || e.mode == 1 {
+		return
+	}
+	raw := strings.TrimSpace(e.buffer.String())
+	if raw == "" {
+		return
+	}
+	if strings.HasPrefix(raw, "```") {
+		lines := strings.Split(raw, "\n")
+		if len(lines) >= 3 {
+			raw = strings.Join(lines[1:len(lines)-1], "\n")
+		}
+	}
+	var payload struct {
+		Content string `json:"content"`
+	}
+	if json.Unmarshal([]byte(raw), &payload) == nil && payload.Content != "" {
+		e.callback(payload.Content)
+		return
+	}
+	if e.mode == 0 {
+		e.callback(e.buffer.String())
+	}
 }
 
 func NewStreamingRunner(cfg StreamingRunnerConfig) *StreamingRunner {
@@ -41,11 +101,12 @@ func NewStreamingRunner(cfg StreamingRunnerConfig) *StreamingRunner {
 		timeout = 300 // Longer timeout for streaming
 	}
 	return &StreamingRunner{
-		baseURL:  cfg.BaseURL,
-		model:    cfg.Model,
-		protocol: cfg.Protocol,
-		client:   &http.Client{Timeout: time.Duration(timeout) * time.Second},
-		onToken:  cfg.OnToken,
+		baseURL:     cfg.BaseURL,
+		model:       cfg.Model,
+		protocol:    cfg.Protocol,
+		client:      &http.Client{Timeout: time.Duration(timeout) * time.Second},
+		onToken:     cfg.OnToken,
+		contextSize: cfg.ContextSize,
 	}
 }
 
@@ -99,16 +160,21 @@ func (s *StreamingRunner) streamOllamaWithTools(ctx context.Context, systemConte
 		})
 	}
 
+	options := map[string]interface{}{
+		"num_predict": maxTokens,
+		"temperature": 0.1, // Low temp for deterministic tool calling
+		"top_p":       0.9,
+	}
+	if s.contextSize > 0 {
+		options["num_ctx"] = s.contextSize
+	}
+
 	body, err := json.Marshal(ollamaChatReq{
 		Model:    s.model,
 		Messages: chatMessages,
 		Stream:   true,
 		Tools:    ollamaTools,
-		Options: map[string]interface{}{
-			"num_predict": maxTokens,
-			"temperature": 0.1, // Low temp for deterministic tool calling
-			"top_p":       0.9,
-		},
+		Options:  options,
 	})
 	if err != nil {
 		return "", err
@@ -131,6 +197,7 @@ func (s *StreamingRunner) streamOllamaWithTools(ctx context.Context, systemConte
 	}
 
 	var full strings.Builder
+	emitter := safeStreamEmitter{callback: s.onToken}
 	var lastToolCalls []struct {
 		Function struct {
 			Name      string                 `json:"name"`
@@ -155,9 +222,7 @@ func (s *StreamingRunner) streamOllamaWithTools(ctx context.Context, systemConte
 
 		if chunk.Message.Content != "" {
 			full.WriteString(chunk.Message.Content)
-			if s.onToken != nil {
-				s.onToken(chunk.Message.Content)
-			}
+			emitter.Write(chunk.Message.Content)
 		}
 
 		if len(chunk.Message.ToolCalls) > 0 {
@@ -175,6 +240,7 @@ func (s *StreamingRunner) streamOllamaWithTools(ctx context.Context, systemConte
 
 	// If tool call was returned, format as structured JSON for the engine
 	if len(lastToolCalls) > 0 {
+		emitter.Finish(false)
 		tc := lastToolCalls[0]
 		structured := map[string]interface{}{
 			"reasoning": full.String(),
@@ -188,7 +254,8 @@ func (s *StreamingRunner) streamOllamaWithTools(ctx context.Context, systemConte
 		return string(out), nil
 	}
 
-	return full.String(), nil
+	emitter.Finish(true)
+	return normalizeNativeContent(full.String()), nil
 }
 
 // ── Ollama /api/generate streaming (legacy, no tools) ───────────────────────
@@ -199,16 +266,21 @@ type ollamaStreamChunk struct {
 }
 
 func (s *StreamingRunner) streamOllama(ctx context.Context, prompt string, maxTokens int) (string, error) {
+	options := map[string]interface{}{
+		"num_predict": maxTokens,
+		"temperature": 0.1, // Low temp for deterministic JSON output
+		"top_p":       0.9,
+	}
+	if s.contextSize > 0 {
+		options["num_ctx"] = s.contextSize
+	}
+
 	body, err := json.Marshal(map[string]interface{}{
-		"model":  s.model,
-		"prompt": prompt,
-		"stream": true,
-		"format": "json", // Enforce valid JSON output at the API level
-		"options": map[string]interface{}{
-			"num_predict": maxTokens,
-			"temperature": 0.1, // Low temp for deterministic JSON output
-			"top_p":       0.9,
-		},
+		"model":   s.model,
+		"prompt":  prompt,
+		"stream":  true,
+		"format":  "json", // Enforce valid JSON output at the API level
+		"options": options,
 	})
 	if err != nil {
 		return "", err
@@ -231,6 +303,7 @@ func (s *StreamingRunner) streamOllama(ctx context.Context, prompt string, maxTo
 	}
 
 	var full strings.Builder
+	emitter := safeStreamEmitter{callback: s.onToken}
 	scanner := bufio.NewScanner(resp.Body)
 	scanBuf := make([]byte, 0, 64*1024)
 	scanner.Buffer(scanBuf, 1024*1024)
@@ -248,9 +321,7 @@ func (s *StreamingRunner) streamOllama(ctx context.Context, prompt string, maxTo
 
 		if chunk.Response != "" {
 			full.WriteString(chunk.Response)
-			if s.onToken != nil {
-				s.onToken(chunk.Response)
-			}
+			emitter.Write(chunk.Response)
 		}
 
 		if chunk.Done {
@@ -262,5 +333,6 @@ func (s *StreamingRunner) streamOllama(ctx context.Context, prompt string, maxTo
 		return full.String(), fmt.Errorf("stream read error: %w", err)
 	}
 
+	emitter.Finish(true)
 	return full.String(), nil
 }

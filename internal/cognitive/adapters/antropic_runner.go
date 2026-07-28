@@ -34,7 +34,7 @@ func NewAnthropicRunner(cfg AnthropicRunnerConfig) *AnthropicRunner {
 	if cfg.Model == "" {
 		cfg.Model = "claude-sonnet-4-5-20250929"
 	}
-	if cfg.MaxTokens == 0 {
+	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = 4096
 	}
 	timeout := cfg.TimeoutS
@@ -81,16 +81,7 @@ type anthropicTool struct {
 	InputSchema anthropicToolSchema `json:"input_schema"`
 }
 
-type anthropicToolSchema struct {
-	Type       string                       `json:"type"`
-	Properties map[string]anthropicToolProp `json:"properties"`
-	Required   []string                     `json:"required,omitempty"`
-}
-
-type anthropicToolProp struct {
-	Type        string `json:"type"`
-	Description string `json:"description,omitempty"`
-}
+type anthropicToolSchema = models.JSONSchema
 
 // ─── Response Types ─────────────────────────────────────────────────────────
 
@@ -123,7 +114,7 @@ func (r *AnthropicRunner) Generate(ctx context.Context, prompt string, toolDefs 
 	reqBody := anthropicRequest{
 		Model:     r.model,
 		MaxTokens: r.maxTokens,
-		System: `You are Axiom, a local-first AI agent. You have access to tools for file operations, code execution, web search, and cloud delegation.
+		System: `You are Axiom, an AI agent with access to tools for file operations, code execution, web search, and cloud delegation.
 
 When asked to perform a task:
 1. Think step by step about what tools you need
@@ -181,6 +172,10 @@ Always respond with valid JSON matching this schema:
 
 // parseResponse converts Claude's response into Axiom's LLMResponse format.
 func (r *AnthropicRunner) parseResponse(resp *anthropicResponse) (*models.LLMResponse, error) {
+	if err := validateSingleToolUse(resp); err != nil {
+		return nil, err
+	}
+
 	llmResp := &models.LLMResponse{}
 
 	for _, block := range resp.Content {
@@ -244,73 +239,17 @@ func (r *AnthropicRunner) convertTools(defs []models.ToolDefinition) []anthropic
 		tool := anthropicTool{
 			Name:        def.Name,
 			Description: def.Description,
-			InputSchema: r.parseSchema(def.ArgsSchema),
+			InputSchema: def.CanonicalSchema(),
 		}
 		tools = append(tools, tool)
 	}
 	return tools
 }
 
-// parseSchema converts Axiom's simple schema strings into Claude's input_schema format.
+// parseSchema is the compatibility adapter retained for legacy callers and
+// tests. Provider requests consume ToolDefinition.CanonicalSchema directly.
 func (r *AnthropicRunner) parseSchema(schema string) anthropicToolSchema {
-	result := anthropicToolSchema{
-		Type:       "object",
-		Properties: make(map[string]anthropicToolProp),
-	}
-
-	if schema == "" || schema == "{}" {
-		return result
-	}
-
-	// Try parsing as JSON
-	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(schema), &raw); err != nil {
-		return result
-	}
-
-	for key, val := range raw {
-		desc := ""
-		propType := "string"
-
-		switch v := val.(type) {
-		case string:
-			desc = v
-			// Infer type from description
-			if containsAny(v, "int", "number", "count") {
-				propType = "integer"
-			} else if containsAny(v, "bool", "true", "false") {
-				propType = "boolean"
-			}
-		case map[string]interface{}:
-			if t, ok := v["type"].(string); ok {
-				propType = t
-			}
-			if d, ok := v["description"].(string); ok {
-				desc = d
-			}
-		}
-
-		result.Properties[key] = anthropicToolProp{
-			Type:        propType,
-			Description: desc,
-		}
-	}
-
-	return result
-}
-
-func containsAny(s string, substrs ...string) bool {
-	lower := fmt.Sprintf("%s", s)
-	for _, sub := range substrs {
-		if len(lower) > 0 && len(sub) > 0 {
-			for i := 0; i <= len(lower)-len(sub); i++ {
-				if lower[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-		}
-	}
-	return false
+	return models.ParseLegacyArgsSchema(schema)
 }
 
 // ─── ToolAwareRunner Interface (CompleteWithTools) ──────────────────────────
@@ -326,7 +265,7 @@ func (r *AnthropicRunner) CompleteWithTools(
 	ctx context.Context,
 	systemContext string,
 	messages []models.Message,
-	maxTokens int,
+	_ int,
 	tools []models.ToolDefinition,
 ) (string, error) {
 	claudeTools := r.convertTools(tools)
@@ -335,13 +274,9 @@ func (r *AnthropicRunner) CompleteWithTools(
 		return "", fmt.Errorf("message conversion: %w", err)
 	}
 
-	if maxTokens <= 0 {
-		maxTokens = r.maxTokens
-	}
-
 	reqBody := anthropicRequest{
 		Model:     r.model,
-		MaxTokens: maxTokens,
+		MaxTokens: r.maxTokens,
 		System:    systemContext,
 		Messages:  claudeMessages,
 		Tools:     claudeTools,
@@ -558,6 +493,10 @@ func mergeConsecutiveRoles(messages []anthropicMessage) []anthropicMessage {
 // internal JSON format: {"reasoning":"...","tool_call":{...}|null,"content":"..."}.
 // This lets the cognitive engine's parseResponse() handle cloud and local responses uniformly.
 func (r *AnthropicRunner) serializeToAxiomJSON(resp *anthropicResponse) (string, error) {
+	if err := validateSingleToolUse(resp); err != nil {
+		return "", err
+	}
+
 	type axiomOutput struct {
 		Reasoning string      `json:"reasoning"`
 		ToolCall  interface{} `json:"tool_call"`
@@ -593,14 +532,32 @@ func (r *AnthropicRunner) serializeToAxiomJSON(resp *anthropicResponse) (string,
 	return string(result), nil
 }
 
+// validateSingleToolUse enforces Axiom's sequential execution contract. Claude
+// may return parallel tool_use blocks, but the orchestrator can execute and
+// correlate only one tool call per model turn. Rejecting the response avoids
+// silently discarding all but the last requested action.
+func validateSingleToolUse(resp *anthropicResponse) error {
+	toolUses := 0
+	for _, block := range resp.Content {
+		if block.Type == "tool_use" {
+			toolUses++
+		}
+	}
+
+	if toolUses > 1 {
+		return fmt.Errorf("anthropic returned %d tool_use blocks; Axiom supports one tool call per turn", toolUses)
+	}
+	return nil
+}
+
 // ─── LLMRunner Interface Implementation ─────────────────────────────────────
 
 // Complete satisfies the cognitive.LLMRunner interface so Claude can act as a
 // drop-in replacement for the local model, using the exact same JSON prompting.
-func (r *AnthropicRunner) Complete(ctx context.Context, prompt string, maxTokens int) (string, error) {
+func (r *AnthropicRunner) Complete(ctx context.Context, prompt string, _ int) (string, error) {
 	reqBody := anthropicRequest{
 		Model:     r.model,
-		MaxTokens: maxTokens,
+		MaxTokens: r.maxTokens,
 		// We pass the raw prompt (which includes Axiom's system instructions and tools)
 		// directly to Claude as a user message.
 		Messages: []anthropicMessage{

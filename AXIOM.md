@@ -21,7 +21,7 @@
 - **Game dev:** Python + Pygame for prototypes, Lua for Playdate (LÖVE/Playdate SDK)
 - **Frontend:** SolidJS / React + Vite
 - **Backend:** Go, Node.js
-- **Default Python:** Use `/home/shki/projects/axiom/.venv/bin/python` when inside Axiom, otherwise `python3`
+- **Default Python:** Use `/home/shki/.axiom/venv/bin/python` for Axiom's embedded tools, otherwise `python3`
 
 ## Conventions
 - Commit changes with git after completing a task
@@ -31,7 +31,7 @@
 - When building games: include a working main entry point that launches without errors
 
 ## Current Focus
-- Axiom: local-first AI agent runtime (this project)
+- Axiom: hybrid AI agent runtime using local Qwen 3.6 and OpenAI cloud routing (this project)
 - Totembra: Balatro-like dice roguelike in Pygame (`/home/shki/projects/totembra`)
 - Exploring: AI consulting for local service businesses
 

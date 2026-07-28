@@ -1,11 +1,15 @@
 # Binaries / builds
 build/
-dist/
-frontend/dist/
+/dist/
+frontend/dist/*
+!frontend/dist/.gitkeep
+models/*.gguf
 
 # Dependencies
 frontend/node_modules/
 .venv/
+__pycache__/
+*.py[cod]
 
 # Runtime / local state
 *.db

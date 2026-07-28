@@ -5,62 +5,70 @@ import (
 	"sync"
 
 	"axiom/internal/cognitive"
-	"axiom/internal/cognitive/adapters"
 )
 
 // Mode represents Axiom's operating mode.
 type Mode string
 
 const (
-	// ModeLocal uses only the local LLM (Ollama/Phi-4).
+	// ModeLocal uses only the configured local LLM.
 	// Cloud delegation tool is DISABLED.
 	ModeLocal Mode = "local"
 
 	// ModeHybrid uses the local LLM with cloud delegation available.
-	// Phi-4 decides when to hand off to Claude/Gemini.
+	// Axiom routes complex work to the configured cloud provider.
 	ModeHybrid Mode = "hybrid"
 
-	// ModeCloud uses Claude as the primary LLM.
-	// Claude drives the entire Think-Verify-Act loop natively,
-	// with full access to Axiom's tool definitions via Claude's tools array.
+	// ModeCloud uses the configured cloud provider as the primary LLM.
+	// The cloud model drives the Think-Verify-Act loop with native tools.
 	ModeCloud Mode = "cloud"
 )
 
 // ModeManager handles switching between operating modes.
 type ModeManager struct {
-	mu            sync.RWMutex
-	currentMode   Mode
-	engine        *cognitive.Engine
-	localRunner   cognitive.LLMRunner
-	cloudRunner   cognitive.LLMRunner
-	hybridRunner  cognitive.LLMRunner       // auto-routing runner
-	cloudDisabler func(enabled bool)        // toggles ask_cloud_model tool visibility
+	mu             sync.RWMutex
+	currentMode    Mode
+	engine         *cognitive.Engine
+	localRunner    cognitive.LLMRunner
+	cloudRunner    cognitive.LLMRunner
+	hybridRunner   cognitive.LLMRunner // auto-routing runner
+	hybridDelegate bool                // ask_cloud_model has a configured backend
+	cloudDisabler  func(enabled bool)  // toggles ask_cloud_model tool visibility
+	cloudProvider  string
 }
 
 type ModeManagerConfig struct {
-	Engine        *cognitive.Engine
-	LocalRunner   cognitive.LLMRunner
-	CloudRunner   *adapters.AnthropicRunner // nil if no API key
-	OnCloudToggle func(enabled bool)        // called to enable/disable cloud tool
+	Engine                    *cognitive.Engine
+	LocalRunner               cognitive.LLMRunner
+	CloudRunner               cognitive.LLMRunner // nil if the selected provider is not configured
+	CloudProvider             string
+	HybridDelegationAvailable bool
+	OnCloudToggle             func(enabled bool) // called to enable/disable cloud tool
 }
 
 func NewModeManager(cfg ModeManagerConfig) *ModeManager {
 	mm := &ModeManager{
-		currentMode:   ModeHybrid, // default
-		engine:        cfg.Engine,
-		localRunner:   cfg.LocalRunner,
-		cloudDisabler: cfg.OnCloudToggle,
+		engine:         cfg.Engine,
+		localRunner:    cfg.LocalRunner,
+		hybridDelegate: cfg.HybridDelegationAvailable,
+		cloudDisabler:  cfg.OnCloudToggle,
+		cloudProvider:  cfg.CloudProvider,
+	}
+	if mm.cloudProvider == "" {
+		mm.cloudProvider = "cloud"
 	}
 
 	if cfg.CloudRunner != nil {
 		mm.cloudRunner = cfg.CloudRunner
 
 		// Build the hybrid router: classifies locally, dispatches to best runner
-		router := cognitive.NewHybridRouter(cognitive.HybridRouterConfig{
-			LocalRunner: cfg.LocalRunner,
-			CloudRunner: cfg.CloudRunner,
-		})
-		mm.hybridRunner = cognitive.NewHybridRunner(router)
+		if cfg.LocalRunner != nil {
+			router := cognitive.NewHybridRouter(cognitive.HybridRouterConfig{
+				LocalRunner: cfg.LocalRunner,
+				CloudRunner: cfg.CloudRunner,
+			})
+			mm.hybridRunner = cognitive.NewHybridRunner(router)
+		}
 	}
 
 	return mm
@@ -75,7 +83,7 @@ func (mm *ModeManager) SetMode(mode Mode) error {
 	switch mode {
 	case ModeLocal:
 		if mm.localRunner == nil {
-			return fmt.Errorf("local mode requires Ollama — is it running?")
+			return fmt.Errorf("local mode is disabled or has no configured runner")
 		}
 		mm.engine.SetRunner(mm.localRunner)
 		mm.engine.SetMode("local") // tell the engine: no cloud delegation, use all local tools
@@ -86,7 +94,10 @@ func (mm *ModeManager) SetMode(mode Mode) error {
 
 	case ModeHybrid:
 		if mm.localRunner == nil {
-			return fmt.Errorf("hybrid mode requires Ollama — is it running?")
+			return fmt.Errorf("hybrid mode requires an enabled local runner")
+		}
+		if mm.hybridRunner == nil && !mm.hybridDelegate {
+			return fmt.Errorf("hybrid mode requires a configured cloud runner or delegation provider")
 		}
 		if mm.hybridRunner != nil {
 			// Smart routing: classify locally, dispatch to best runner
@@ -103,7 +114,10 @@ func (mm *ModeManager) SetMode(mode Mode) error {
 
 	case ModeCloud:
 		if mm.cloudRunner == nil {
-			return fmt.Errorf("cloud mode requires an Anthropic API key (set cloud.anthropic_key in axiom.toml)")
+			return fmt.Errorf(
+				"cloud mode requires configured %s credentials",
+				mm.cloudProvider,
+			)
 		}
 		mm.engine.SetRunner(mm.cloudRunner)
 		mm.engine.SetMode("cloud")
@@ -130,7 +144,10 @@ func (mm *ModeManager) CurrentMode() Mode {
 func (mm *ModeManager) AvailableModes() []Mode {
 	modes := []Mode{}
 	if mm.localRunner != nil {
-		modes = append(modes, ModeLocal, ModeHybrid)
+		modes = append(modes, ModeLocal)
+		if mm.hybridRunner != nil || mm.hybridDelegate {
+			modes = append(modes, ModeHybrid)
+		}
 	}
 	if mm.cloudRunner != nil {
 		modes = append(modes, ModeCloud)

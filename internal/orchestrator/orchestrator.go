@@ -2,11 +2,12 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,8 +24,8 @@ import (
 const MaxToolIterationsLocal = 25
 
 // MaxToolIterationsCloud is the agent loop ceiling for cloud mode.
-// Claude is better at staying on task through long sequences and the higher
-// latency of cloud inference means we're already paying the cost — give it room.
+// Cloud models can sustain longer tool sequences, but this remains a hard cost
+// and runaway-loop boundary.
 const MaxToolIterationsCloud = 50
 
 // Deprecated: use MaxToolIterationsLocal or MaxToolIterationsCloud.
@@ -53,7 +54,7 @@ const complexityThreshold = 10
 type LoopEventKind string
 
 const (
-	LoopEventThinking   LoopEventKind = "thinking"   // LLM reasoning step started
+	LoopEventThinking   LoopEventKind = "thinking"    // LLM reasoning step started
 	LoopEventToolCall   LoopEventKind = "tool_call"   // LLM wants to call a tool
 	LoopEventToolResult LoopEventKind = "tool_result" // tool returned a result
 	LoopEventBlocked    LoopEventKind = "blocked"     // guardrail blocked a tool call
@@ -64,10 +65,13 @@ const (
 
 // LoopEvent is a real-time progress update emitted during AgentLoop execution.
 type LoopEvent struct {
-	Kind      LoopEventKind `json:"kind"`
-	Iteration int           `json:"iteration"`
-	Message   string        `json:"message"`
-	ToolName  string        `json:"tool_name,omitempty"`
+	ConversationID string        `json:"conversation_id"`
+	RunID          string        `json:"run_id"`
+	Kind           LoopEventKind `json:"kind"`
+	Iteration      int           `json:"iteration"`
+	MaxIterations  int           `json:"max_iterations"`
+	Message        string        `json:"message"`
+	ToolName       string        `json:"tool_name,omitempty"`
 }
 
 // LoopProgressFn is called after each meaningful step in the agent loop.
@@ -98,9 +102,26 @@ type Orchestrator struct {
 
 	mu                sync.RWMutex
 	conversations     map[string]*models.Conversation
+	conversationLocks map[string]*sync.Mutex
 	reflectionEnabled bool
 	workspaceDirs     []string
 	iterationLimit    int // 0 = use mode defaults
+
+	// lifecycleMu makes wipe a barrier: it cancels active runs, waits for all
+	// mutating operations to leave, then clears memory and conversations. That
+	// prevents a run holding an old conversation pointer from saving it again.
+	lifecycleMu    sync.RWMutex
+	runMu          sync.Mutex
+	runs           map[string]*activeRun
+	runByConv      map[string]string
+	pendingCancels map[string]string
+	wiping         bool
+}
+
+type activeRun struct {
+	conversationID string
+	runID          string
+	cancel         context.CancelFunc
 }
 
 func New(cfg Config) *Orchestrator {
@@ -112,6 +133,10 @@ func New(cfg Config) *Orchestrator {
 		guardrail:         cfg.Guardrail,
 		modeManager:       cfg.ModeManager,
 		conversations:     make(map[string]*models.Conversation),
+		conversationLocks: make(map[string]*sync.Mutex),
+		runs:              make(map[string]*activeRun),
+		runByConv:         make(map[string]string),
+		pendingCancels:    make(map[string]string),
 		reflectionEnabled: cfg.ReflectionEnabled,
 		workspaceDirs:     cfg.WorkspaceDirs,
 		iterationLimit:    cfg.MaxIterations,
@@ -143,18 +168,152 @@ func (o *Orchestrator) Shutdown() {
 	if o.cancel != nil {
 		o.cancel()
 	}
+	o.runMu.Lock()
+	for _, run := range o.runs {
+		run.cancel()
+	}
+	o.runMu.Unlock()
+}
+
+func (o *Orchestrator) rootContext() context.Context {
+	if o.ctx != nil {
+		return o.ctx
+	}
+	return context.Background()
+}
+
+func (o *Orchestrator) beginRun(conversationID, runID string) (context.Context, *activeRun, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	runID = strings.TrimSpace(runID)
+	if conversationID == "" {
+		return nil, nil, fmt.Errorf("conversation id is required")
+	}
+	if runID == "" {
+		return nil, nil, fmt.Errorf("run id is required")
+	}
+
+	o.runMu.Lock()
+	defer o.runMu.Unlock()
+	if o.wiping {
+		return nil, nil, fmt.Errorf("memory purge is in progress")
+	}
+	if _, exists := o.runs[runID]; exists {
+		return nil, nil, fmt.Errorf("run id %q is already active", runID)
+	}
+	if existing, exists := o.runByConv[conversationID]; exists {
+		return nil, nil, fmt.Errorf("conversation %q already has active run %q", conversationID, existing)
+	}
+
+	runCtx, cancel := context.WithCancel(o.rootContext())
+	run := &activeRun{conversationID: conversationID, runID: runID, cancel: cancel}
+	o.runs[runID] = run
+	o.runByConv[conversationID] = runID
+	if pendingConversation, pending := o.pendingCancels[runID]; pending && pendingConversation == conversationID {
+		delete(o.pendingCancels, runID)
+		cancel()
+	}
+	return runCtx, run, nil
+}
+
+func (o *Orchestrator) finishRun(run *activeRun) {
+	if run == nil {
+		return
+	}
+	o.runMu.Lock()
+	if current, ok := o.runs[run.runID]; ok && current == run {
+		delete(o.runs, run.runID)
+		delete(o.runByConv, run.conversationID)
+	}
+	delete(o.pendingCancels, run.runID)
+	o.runMu.Unlock()
+	run.cancel()
+}
+
+// QueueAgentLoopCancellation closes the small admission race between the UI
+// accepting a run and AgentLoop registering it. App calls this only after
+// validating that the exact run is its active scope.
+func (o *Orchestrator) QueueAgentLoopCancellation(conversationID, runID string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	runID = strings.TrimSpace(runID)
+	if conversationID == "" || runID == "" {
+		return fmt.Errorf("conversation id and run id are required")
+	}
+	o.runMu.Lock()
+	defer o.runMu.Unlock()
+	if run, ok := o.runs[runID]; ok {
+		if run.conversationID != conversationID {
+			return fmt.Errorf("active run %q belongs to a different conversation", runID)
+		}
+		run.cancel()
+		return nil
+	}
+	o.pendingCancels[runID] = conversationID
+	return nil
+}
+
+func (o *Orchestrator) ClearQueuedAgentLoopCancellation(conversationID, runID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	runID = strings.TrimSpace(runID)
+	o.runMu.Lock()
+	if pendingConversation, ok := o.pendingCancels[runID]; ok && pendingConversation == conversationID {
+		delete(o.pendingCancels, runID)
+	}
+	o.runMu.Unlock()
+}
+
+// CancelAgentLoop cancels exactly one active run. Requiring both identifiers
+// prevents a stale UI from cancelling a newer run that happens to reuse one of
+// them.
+func (o *Orchestrator) CancelAgentLoop(conversationID, runID string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	runID = strings.TrimSpace(runID)
+	o.runMu.Lock()
+	run, ok := o.runs[runID]
+	if !ok || run.conversationID != conversationID {
+		o.runMu.Unlock()
+		return fmt.Errorf("active run %q for conversation %q was not found", runID, conversationID)
+	}
+	run.cancel()
+	o.runMu.Unlock()
+	return nil
+}
+
+// HasActiveRuns reports whether any autonomous run is in progress.
+func (o *Orchestrator) HasActiveRuns() bool {
+	o.runMu.Lock()
+	defer o.runMu.Unlock()
+	return len(o.runs) > 0
 }
 
 // SendMessage runs the full Think-Verify-Act loop with semantic memory injection.
 func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.AgentResponse, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil, fmt.Errorf("conversation id is required")
+	}
+	o.lifecycleMu.RLock()
+	defer o.lifecycleMu.RUnlock()
+	conversationMu := o.conversationMutex(conversationID)
+	conversationMu.Lock()
+	defer conversationMu.Unlock()
+	ctx := o.rootContext()
+
 	start := time.Now()
 	o.log.Debug("Ingest: [%s] %s", conversationID, userMessage)
 
-	conv := o.getOrCreateConversation(conversationID)
-	conv.AddMessage(models.RoleUser, userMessage)
+	conv, err := o.getOrCreateConversation(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	beforeTurn := conv.Clone()
+	addUserMessage(conv, userMessage)
+	if err := o.persistConversation(ctx, conversationID, conv); err != nil {
+		*conv = *beforeTurn
+		return nil, fmt.Errorf("persist user message: %w", err)
+	}
 
 	// ── RECALL: Semantic memory search ──────────────────────────────────
-	memories, err := o.memory.Search(o.ctx, userMessage, 5)
+	memories, err := o.memory.Search(ctx, userMessage, 5)
 	if err != nil {
 		o.log.Warn("Memory recall failed: %v", err)
 	}
@@ -162,108 +321,61 @@ func (o *Orchestrator) SendMessage(conversationID, userMessage string) (*models.
 		o.log.Debug("Recalled %d memories (top score: %.3f)", len(memories), memories[0].Score)
 	}
 
-	// Pre-build memory injection once — avoids rebuilding the string every iteration
-	memInjection := buildMemoryInjection(memories)
-
 	// ── THINK-VERIFY-ACT LOOP ───────────────────────────────────────────
-	var finalResponse *cognitive.Response
-	var toolsUsedThisTurn []string
-
-	for i := 0; i < o.maxIterations(); i++ {
-		// Snapshot current messages (trimmed for context window safety)
-		rawMsgs := make([]models.Message, len(conv.Messages))
-		copy(rawMsgs, conv.Messages)
-		llmMessages := trimContextMessages(rawMsgs)
-
-		// Inject memory into the last user message on the first iteration only
-		if i == 0 && memInjection != "" {
-			for j := len(llmMessages) - 1; j >= 0; j-- {
-				if llmMessages[j].Role == models.RoleUser {
-					llmMessages[j].Content += memInjection
-					break
-				}
-			}
+	loop, err := o.runToolLoop(
+		ctx,
+		conversationID,
+		conv,
+		memories,
+		o.maxIterations(),
+		toolLoopPolicy{
+			onToolCall: func(_ int, response *cognitive.Response, _ bool) {
+				o.log.Debug("Tool call: %s(%v)", response.ToolCall.Name, response.ToolCall.Args)
+			},
+		},
+	)
+	if err != nil {
+		status := fmt.Sprintf("[SYSTEM ERROR] agent loop failed at iteration %d: %s", loop.Iterations, err)
+		if persistErr := o.persistTerminalStatus(conversationID, conv, status); persistErr != nil {
+			return nil, fmt.Errorf(
+				"agent loop error at iteration %d: %w (persist terminal status: %v)",
+				loop.Iterations,
+				err,
+				persistErr,
+			)
 		}
-
-		resp, err := o.cognitive.Generate(o.ctx, cognitive.Request{
-			Messages:      llmMessages,
-			MemoryContext: memories,
-			Tools:         o.tools.Definitions(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("cognitive error: %w", err)
-		}
-
-		if resp.ToolCall == nil {
-			finalResponse = resp
-			break
-		}
-
-		o.log.Debug("Tool call: %s(%v)", resp.ToolCall.Name, resp.ToolCall.Args)
-		toolsUsedThisTurn = append(toolsUsedThisTurn, resp.ToolCall.Name)
-
-		assistantIntent := resp.Content
-		if assistantIntent == "" {
-			argsBytes, _ := json.Marshal(resp.ToolCall.Args)
-			cleanReasoning := fmt.Sprintf("%q", resp.Reasoning)
-			assistantIntent = fmt.Sprintf(`{"reasoning": %s, "tool_call": {"name": "%s", "args": %s}, "content": ""}`,
-				cleanReasoning, resp.ToolCall.Name, string(argsBytes))
-		}
-		conv.AddMessage(models.RoleAssistant, assistantIntent)
-
-		if err := o.guardrail.Check(resp.ToolCall); err != nil {
-			o.log.Warn("Guardrail blocked: %v", err)
-			conv.AddMessage(models.RoleTool, fmt.Sprintf("[BLOCKED] %s: %s", resp.ToolCall.Name, err))
-			continue
-		}
-
-		result, err := o.tools.Execute(o.ctx, resp.ToolCall)
-		if err != nil {
-			conv.AddMessage(models.RoleTool, fmt.Sprintf("[ERROR] %s: %s", resp.ToolCall.Name, err))
-			continue
-		}
-
-		formattedResult := fmt.Sprintf("[TOOL RESULT]\n%s\n[END TOOL RESULT]", result)
-		conv.AddMessage(models.RoleTool, formattedResult)
+		return nil, fmt.Errorf("agent loop error at iteration %d: %w", loop.Iterations, err)
 	}
-
-	if finalResponse == nil {
+	if loop.HitLimit {
+		if err := o.persistTerminalStatus(
+			conversationID,
+			conv,
+			fmt.Sprintf("[SYSTEM ERROR] max tool iterations (%d) exceeded", o.maxIterations()),
+		); err != nil {
+			return nil, fmt.Errorf("max tool iterations (%d) exceeded (persist terminal status: %v)", o.maxIterations(), err)
+		}
 		return nil, fmt.Errorf("max tool iterations (%d) exceeded", o.maxIterations())
 	}
+	finalResponse := loop.FinalResponse
+	toolsUsedThisTurn := loop.ToolsUsed
 
 	if finalResponse.Content == "" {
 		finalResponse.Content = "Action completed successfully."
 	}
 
 	// ── REFLECTION: Optional self-critique step ─────────────────────────
-	if o.reflectionEnabled && len(finalResponse.Content) > 200 {
-		reflectionResp, err := o.cognitive.Generate(o.ctx, cognitive.Request{
-			Messages: []models.Message{
-				{Role: models.RoleUser, Content: userMessage},
-				{Role: models.RoleAssistant, Content: finalResponse.Content},
-				{
-					Role: models.RoleUser,
-					Content: `Review your response above. Is it accurate, complete, and helpful?
-If yes, respond with only: LGTM
-If no, provide an improved response.`,
-				},
-			},
-			Tools: nil, // No tools during reflection
-		})
-		if err == nil && reflectionResp != nil && !strings.Contains(reflectionResp.Content, "LGTM") {
-			o.log.Info("Reflection improved response")
-			finalResponse.Content = reflectionResp.Content
-		}
-	}
+	finalResponse.Content = o.reflectFinalResponse(ctx, userMessage, finalResponse.Content)
 
 	// ── PERSIST: Store exchange in long-term memory ─────────────────────
 	conv.AddMessage(models.RoleAssistant, finalResponse.Content)
-	if err := o.memory.Store(o.ctx, userMessage, finalResponse.Content); err != nil {
+	if err := o.memory.Store(ctx, userMessage, finalResponse.Content); err != nil {
 		o.log.Warn("Memory persist failed: %v", err)
 	}
 
 	// Persist conversation to SQLite
-	o.saveConversation(conversationID, conv)
+	if err := o.persistConversation(ctx, conversationID, conv); err != nil {
+		return nil, fmt.Errorf("persist completed conversation: %w", err)
+	}
 
 	elapsed := time.Since(start)
 	o.log.Info("Response in %s | %d memories recalled", elapsed, len(memories))
@@ -283,36 +395,67 @@ If no, provide an improved response.`,
 //
 //  1. The LLM emits <TASK_COMPLETE> in its content — clean early exit.
 //  2. The LLM returns no tool call — it has nothing left to do.
-//  3. MaxIterations (10) is reached — safety ceiling, returns control to user.
+//  3. The configured or mode-specific iteration ceiling is reached.
 //
 // onProgress is called after each step so the frontend can render live updates.
 // Pass nil to suppress progress events (e.g. in tests).
-func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress LoopProgressFn) (*models.AgentResponse, error) {
+func (o *Orchestrator) AgentLoop(conversationID, runID, userPrompt string, onProgress LoopProgressFn) (*models.AgentResponse, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	runID = strings.TrimSpace(runID)
+	o.lifecycleMu.RLock()
+	defer o.lifecycleMu.RUnlock()
+
+	runCtx, run, err := o.beginRun(conversationID, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer o.finishRun(run)
+
+	conversationMu := o.conversationMutex(conversationID)
+	conversationMu.Lock()
+	defer conversationMu.Unlock()
+
 	start := time.Now()
+	maxIter := o.maxIterations()
 
 	emit := func(e LoopEvent) {
+		e.ConversationID = conversationID
+		e.RunID = runID
+		e.MaxIterations = maxIter
 		if onProgress != nil {
 			onProgress(e)
 		}
 	}
 
-	conv := o.getOrCreateConversation(conversationID)
-	conv.AddMessage(models.RoleUser, userPrompt)
+	conv, err := o.getOrCreateConversation(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	beforeTurn := conv.Clone()
+	addUserMessage(conv, userPrompt)
+	if err := o.persistRunSnapshot(conversationID, conv); err != nil {
+		*conv = *beforeTurn
+		return nil, fmt.Errorf("persist user message: %w", err)
+	}
+	if err := runCtx.Err(); err != nil {
+		emit(LoopEvent{Kind: LoopEventError, Iteration: 0, Message: "Run cancelled"})
+		if persistErr := o.persistTerminalStatus(conversationID, conv, "[RUN CANCELLED]"); persistErr != nil {
+			return nil, fmt.Errorf("run cancelled before start: %w (persist terminal status: %v)", err, persistErr)
+		}
+		return nil, err
+	}
 
 	// ── Semantic memory recall ───────────────────────────────────────────
-	memories, err := o.memory.Search(o.ctx, userPrompt, 5)
+	memories, err := o.memory.Search(runCtx, userPrompt, 5)
 	if err != nil {
 		o.log.Warn("Memory recall failed: %v", err)
 	}
-
-	// Pre-build memory injection string once — used in iteration 1 only
-	memInjection := buildMemoryInjection(memories)
 
 	// ── Project context loading ───────────────────────────────────────────
 	// Scan workspace dirs for context files relevant to this prompt and inject
 	// them once on iteration 1. Gives the LLM the same "lay of the land" a
 	// human engineer would have before touching a project.
-	projectContext := o.loadProjectContext(userPrompt)
+	projectContext := o.loadProjectContext(runCtx, userPrompt)
 	if projectContext != "" {
 		o.log.Info("Project context loaded (%d bytes)", len(projectContext))
 	}
@@ -340,7 +483,7 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 			planPrompt += projectContext
 		}
 
-		planResp, planErr := o.cognitive.Generate(o.ctx, cognitive.Request{
+		planResp, planErr := o.cognitive.Generate(runCtx, cognitive.Request{
 			Messages: []models.Message{
 				{Role: models.RoleUser, Content: planPrompt},
 			},
@@ -356,175 +499,115 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 		}
 	}
 
-	// Mode-aware iteration ceiling: cloud mode gets more room
-	maxIter := o.maxIterations()
-
-	var (
-		finalContent   string
-		finalReasoning string
-		toolsUsed      []string
-		iteration      int
-		lastToolResult string // tracked for error recovery injection
-	)
-
-	for iteration = 1; iteration <= maxIter; iteration++ {
-		emit(LoopEvent{
-			Kind:      LoopEventThinking,
-			Iteration: iteration,
-			Message:   fmt.Sprintf("Iteration %d/%d — asking LLM", iteration, maxIter),
-		})
-
-		// Snapshot + trim context window to prevent overflow on long conversations
-		rawMsgs := make([]models.Message, len(conv.Messages))
-		copy(rawMsgs, conv.Messages)
-		llmMessages := trimContextMessages(rawMsgs)
-
-		// On iteration 1: inject plan, project context, and memory into the last user message.
-		if iteration == 1 {
-			for j := len(llmMessages) - 1; j >= 0; j-- {
-				if llmMessages[j].Role == models.RoleUser {
-					if taskPlan != "" {
-						llmMessages[j].Content += fmt.Sprintf(
-							"\n\n[TASK PLAN — EXECUTE THIS EXACTLY]\n%s\n[END TASK PLAN]"+
-								"\n\n[MANDATORY EXECUTION RULE]\n"+
-								"Execute the plan above using write_file tool calls — one per file. "+
-								"Do NOT output any file contents as text or code blocks in your response. "+
-								"The ONLY correct action for creating a file is a write_file tool call. "+
-								"Start with the first file in the manifest now.",
-							taskPlan)
-					}
-					if projectContext != "" {
-						llmMessages[j].Content += projectContext
-					}
-					if memInjection != "" {
-						llmMessages[j].Content += memInjection
-					}
-					break
-				}
-			}
-		}
-
-		// On subsequent iterations: if the last tool result was an error, inject
-		// a targeted recovery instruction to steer toward surgical fixes.
-		if iteration > 1 && lastToolResult != "" {
-			if recovery := errorRecoveryInjection(lastToolResult); recovery != "" {
-				for j := len(llmMessages) - 1; j >= 0; j-- {
-					if llmMessages[j].Role == models.RoleTool {
-						llmMessages[j].Content += recovery
+	loop, loopErr := o.runToolLoop(
+		runCtx,
+		conversationID,
+		conv,
+		memories,
+		maxIter,
+		toolLoopPolicy{
+			beforeIteration: func(iteration int) {
+				emit(LoopEvent{
+					Kind:      LoopEventThinking,
+					Iteration: iteration,
+					Message:   fmt.Sprintf("Iteration %d/%d — asking LLM", iteration, maxIter),
+				})
+			},
+			prepareMessages: func(iteration int, llmMessages []models.Message, lastToolResult string) {
+				// Recalled memory is supplied through the engine's explicitly
+				// untrusted reference section rather than duplicated here.
+				if iteration == 1 {
+					for j := len(llmMessages) - 1; j >= 0; j-- {
+						if llmMessages[j].Role != models.RoleUser {
+							continue
+						}
+						if taskPlan != "" {
+							llmMessages[j].Content += fmt.Sprintf(
+								"\n\n[TASK PLAN — EXECUTE THIS EXACTLY]\n%s\n[END TASK PLAN]"+
+									"\n\n[MANDATORY EXECUTION RULE]\n"+
+									"Execute the plan above using write_file tool calls — one per file. "+
+									"Do NOT output any file contents as text or code blocks in your response. "+
+									"The ONLY correct action for creating a file is a write_file tool call. "+
+									"Start with the first file in the manifest now.",
+								taskPlan,
+							)
+						}
+						if projectContext != "" {
+							llmMessages[j].Content += projectContext
+						}
 						break
 					}
 				}
-			}
-		}
-
-		resp, err := o.cognitive.Generate(o.ctx, cognitive.Request{
-			Messages:      llmMessages,
-			MemoryContext: memories,
-			Tools:         o.tools.Definitions(),
-		})
-		if err != nil {
-			emit(LoopEvent{Kind: LoopEventError, Iteration: iteration, Message: err.Error()})
-			return nil, fmt.Errorf("cognitive error at iteration %d: %w", iteration, err)
-		}
-
-		// ── No tool call: LLM is done ────────────────────────────────────
-		if resp.ToolCall == nil {
-			// Intercept: if the LLM dumped a code block in content instead of
-			// calling write_file, extract it and force a write_file call.
-			// This prevents qwen/local models from "printing" files to chat.
-			if extractedPath, extractedCode := extractCodeBlock(resp.Content); extractedPath != "" {
+				if iteration > 1 && lastToolResult != "" {
+					if recovery := errorRecoveryInjection(lastToolResult); recovery != "" {
+						for j := len(llmMessages) - 1; j >= 0; j-- {
+							if llmMessages[j].Role == models.RoleTool {
+								llmMessages[j].Content += recovery
+								break
+							}
+						}
+					}
+				}
+			},
+			intercept: func(response *cognitive.Response) (*cognitive.Response, bool) {
+				extractedPath, extractedCode := extractCodeBlock(response.Content)
+				if extractedPath == "" {
+					return response, false
+				}
 				o.log.Warn("LLM dumped code to content instead of write_file — intercepting (path: %s)", extractedPath)
+				return &cognitive.Response{
+					Reasoning: response.Reasoning,
+					Content:   fmt.Sprintf("Writing %s", extractedPath),
+					ToolCall: &models.ToolCall{
+						Name: "write_file",
+						Args: map[string]interface{}{"path": extractedPath, "content": extractedCode},
+					},
+				}, true
+			},
+			onToolCall: func(iteration int, response *cognitive.Response, intercepted bool) {
+				message := fmt.Sprintf("Calling tool: %s", response.ToolCall.Name)
+				if intercepted {
+					message = fmt.Sprintf("Auto-intercepted: writing %s to disk", response.ToolCall.Args["path"])
+				}
 				emit(LoopEvent{
 					Kind:      LoopEventToolCall,
 					Iteration: iteration,
-					ToolName:  "write_file",
-					Message:   fmt.Sprintf("Auto-intercepted: writing %s to disk", extractedPath),
+					ToolName:  response.ToolCall.Name,
+					Message:   message,
 				})
-				// Record assistant intent
-				conv.AddMessage(models.RoleAssistant, fmt.Sprintf("writing %s", extractedPath))
-				// Execute the write
-				writeResult, writeErr := o.tools.Execute(o.ctx, &models.ToolCall{
-					Name: "write_file",
-					Args: map[string]interface{}{"path": extractedPath, "content": extractedCode},
-				})
-				if writeErr != nil {
-					conv.AddMessage(models.RoleTool, fmt.Sprintf("[ERROR] write_file: %s", writeErr))
-					lastToolResult = fmt.Sprintf("[ERROR] write_file: %s", writeErr)
-				} else {
-					conv.AddMessage(models.RoleTool, fmt.Sprintf("[TOOL RESULT]\n%s\n[END TOOL RESULT]", writeResult))
-					lastToolResult = writeResult
-					emit(LoopEvent{Kind: LoopEventToolResult, Iteration: iteration, ToolName: "write_file", Message: writeResult})
+			},
+			onToolOutcome: func(iteration int, outcome toolTurnOutcome) {
+				eventKind := LoopEventToolResult
+				if outcome.Status == toolTurnBlocked {
+					eventKind = LoopEventBlocked
 				}
-				// Continue the loop so the LLM can write the next file
-				continue
-			}
-
-			finalContent = resp.Content
-			finalReasoning = resp.Reasoning
-
-			if strings.Contains(finalContent, TaskCompleteToken) {
-				finalContent = strings.ReplaceAll(finalContent, TaskCompleteToken, "")
-				finalContent = strings.TrimSpace(finalContent)
-				emit(LoopEvent{Kind: LoopEventDone, Iteration: iteration, Message: "Task complete — LLM signalled <TASK_COMPLETE>"})
-			} else {
-				emit(LoopEvent{Kind: LoopEventDone, Iteration: iteration, Message: "Task complete — no further tool calls"})
-			}
-			break
+				emit(LoopEvent{
+					Kind:      eventKind,
+					Iteration: iteration,
+					ToolName:  outcome.ToolName,
+					Message:   outcome.EventMessage,
+				})
+			},
+		},
+	)
+	if loopErr != nil {
+		iteration := loop.Iterations
+		message := loopErr.Error()
+		status := fmt.Sprintf("[SYSTEM ERROR] %s", loopErr)
+		if errors.Is(loopErr, context.Canceled) {
+			message = "Run cancelled"
+			status = "[RUN CANCELLED]"
 		}
-
-		// ── Tool call: execute and loop back ─────────────────────────────
-		toolName := resp.ToolCall.Name
-		toolsUsed = append(toolsUsed, toolName)
-
-		emit(LoopEvent{
-			Kind:      LoopEventToolCall,
-			Iteration: iteration,
-			ToolName:  toolName,
-			Message:   fmt.Sprintf("Calling tool: %s", toolName),
-		})
-
-		// Record assistant's intent before executing
-		assistantMsg := resp.Content
-		if assistantMsg == "" {
-			argsBytes, _ := json.Marshal(resp.ToolCall.Args)
-			assistantMsg = fmt.Sprintf(`{"reasoning":%q,"tool_call":{"name":%q,"args":%s},"content":""}`,
-				resp.Reasoning, toolName, string(argsBytes))
+		emit(LoopEvent{Kind: LoopEventError, Iteration: iteration, Message: message})
+		if persistErr := o.persistTerminalStatus(conversationID, conv, status); persistErr != nil {
+			return nil, fmt.Errorf("agent loop error at iteration %d: %w (persist terminal status: %v)", iteration, loopErr, persistErr)
 		}
-		conv.AddMessage(models.RoleAssistant, assistantMsg)
-
-		// Guardrail check
-		if err := o.guardrail.Check(resp.ToolCall); err != nil {
-			o.log.Warn("Guardrail blocked %s: %v", toolName, err)
-			blocked := fmt.Sprintf("[BLOCKED] %s: %s", toolName, err)
-			conv.AddMessage(models.RoleTool, blocked)
-			lastToolResult = blocked
-			emit(LoopEvent{Kind: LoopEventBlocked, Iteration: iteration, ToolName: toolName, Message: blocked})
-			continue
-		}
-
-		// Execute tool
-		result, err := o.tools.Execute(o.ctx, resp.ToolCall)
-		if err != nil {
-			errMsg := fmt.Sprintf("[ERROR] %s: %s", toolName, err)
-			conv.AddMessage(models.RoleTool, errMsg)
-			lastToolResult = errMsg
-			emit(LoopEvent{Kind: LoopEventToolResult, Iteration: iteration, ToolName: toolName, Message: errMsg})
-			continue
-		}
-
-		toolResult := fmt.Sprintf("[TOOL RESULT]\n%s\n[END TOOL RESULT]", result)
-		conv.AddMessage(models.RoleTool, toolResult)
-		lastToolResult = toolResult
-		emit(LoopEvent{
-			Kind:      LoopEventToolResult,
-			Iteration: iteration,
-			ToolName:  toolName,
-			Message:   result,
-		})
+		return nil, fmt.Errorf("agent loop error at iteration %d: %w", iteration, loopErr)
 	}
 
-	// ── Hit the ceiling ──────────────────────────────────────────────────
-	if iteration > maxIter && finalContent == "" {
+	toolsUsed := loop.ToolsUsed
+	var finalContent, finalReasoning string
+	if loop.HitLimit {
 		finalContent = fmt.Sprintf("Agent loop reached the %d-iteration safety limit. The task may be partially complete. Tools used: %s",
 			maxIter, strings.Join(toolsUsed, ", "))
 		emit(LoopEvent{
@@ -532,21 +615,45 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 			Iteration: maxIter,
 			Message:   finalContent,
 		})
+	} else {
+		finalContent = loop.FinalResponse.Content
+		finalReasoning = loop.FinalResponse.Reasoning
+		if strings.Contains(finalContent, TaskCompleteToken) {
+			finalContent = strings.TrimSpace(strings.ReplaceAll(finalContent, TaskCompleteToken, ""))
+			emit(LoopEvent{
+				Kind:      LoopEventDone,
+				Iteration: loop.Iterations,
+				Message:   "Task complete — LLM signalled <TASK_COMPLETE>",
+			})
+		} else {
+			emit(LoopEvent{
+				Kind:      LoopEventDone,
+				Iteration: loop.Iterations,
+				Message:   "Task complete — no further tool calls",
+			})
+		}
+		if finalContent == "" {
+			finalContent = "Action completed successfully."
+		}
 	}
+
+	finalContent = o.reflectFinalResponse(runCtx, userPrompt, finalContent)
 
 	// ── Persist exchange in long-term memory ─────────────────────────────
 	conv.AddMessage(models.RoleAssistant, finalContent)
 	if finalContent != "" {
-		if err := o.memory.Store(o.ctx, userPrompt, finalContent); err != nil {
+		if err := o.memory.Store(runCtx, userPrompt, finalContent); err != nil {
 			o.log.Warn("Memory persist failed: %v", err)
 		}
 	}
 
 	// Persist conversation to SQLite
-	o.saveConversation(conversationID, conv)
+	if err := o.persistRunSnapshot(conversationID, conv); err != nil {
+		return nil, fmt.Errorf("persist completed conversation: %w", err)
+	}
 
 	elapsed := time.Since(start)
-	o.log.Info("AgentLoop: %d iterations, %d tools, %s elapsed", iteration-1, len(toolsUsed), elapsed)
+	o.log.Info("AgentLoop: %d iterations, %d tools, %s elapsed", loop.Iterations, len(toolsUsed), elapsed)
 
 	return &models.AgentResponse{
 		Content:        finalContent,
@@ -560,80 +667,250 @@ func (o *Orchestrator) AgentLoop(conversationID, userPrompt string, onProgress L
 // WipeMemory clears both long-term vector storage and short-term conversation context.
 // This is the "Nuclear Option" callable from the UI.
 func (o *Orchestrator) WipeMemory() error {
-	// 1. Wipe the persistent vector DB
+	// Reject new runs and cancel current ones before waiting at the lifecycle
+	// barrier. Every chat mutation holds a lifecycle read lock, so once the
+	// write lock is acquired no stale conversation pointer can be saved later.
+	o.runMu.Lock()
+	o.wiping = true
+	for _, run := range o.runs {
+		run.cancel()
+	}
+	o.runMu.Unlock()
+
+	o.lifecycleMu.Lock()
+	defer o.lifecycleMu.Unlock()
+	defer func() {
+		o.runMu.Lock()
+		o.pendingCancels = make(map[string]string)
+		o.wiping = false
+		o.runMu.Unlock()
+	}()
+
 	if err := o.memory.WipeAll(); err != nil {
 		return err
 	}
 
-	// 2. Clear the active short-term context by re-initializing the map
 	o.mu.Lock()
 	o.conversations = make(map[string]*models.Conversation)
+	o.conversationLocks = make(map[string]*sync.Mutex)
 	o.mu.Unlock()
-
 	return nil
 }
 
-func (o *Orchestrator) GetConversations() []models.ConversationSummary {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+func (o *Orchestrator) GetConversations() ([]models.ConversationSummary, error) {
+	o.lifecycleMu.RLock()
+	defer o.lifecycleMu.RUnlock()
 
-	summaries := make([]models.ConversationSummary, 0, len(o.conversations))
-	for id, conv := range o.conversations {
-		summaries = append(summaries, models.ConversationSummary{
-			ID:           id,
-			Title:        conv.Title,
-			MessageCount: len(conv.Messages),
-			LastActivity: conv.LastActivity,
-		})
+	merged := make(map[string]models.ConversationSummary)
+	stored, err := o.memory.ListConversations(o.rootContext())
+	if err != nil {
+		return nil, fmt.Errorf("list persisted conversations: %w", err)
 	}
-	return summaries
+	for _, summary := range stored {
+		merged[summary.ID] = models.ConversationSummary{
+			ID:           summary.ID,
+			Title:        summary.Title,
+			MessageCount: summary.MessageCount,
+			LastActivity: summary.LastActivity,
+		}
+	}
+
+	type liveConversation struct {
+		id   string
+		conv *models.Conversation
+		mu   *sync.Mutex
+	}
+	o.mu.RLock()
+	live := make([]liveConversation, 0, len(o.conversations))
+	for id, conv := range o.conversations {
+		live = append(live, liveConversation{id: id, conv: conv, mu: o.conversationLocks[id]})
+	}
+	o.mu.RUnlock()
+	for _, item := range live {
+		if item.mu != nil {
+			item.mu.Lock()
+		}
+		merged[item.id] = models.ConversationSummary{
+			ID:           item.id,
+			Title:        item.conv.Title,
+			MessageCount: item.conv.VisibleMessageCount(),
+			LastActivity: item.conv.LastActivity,
+		}
+		if item.mu != nil {
+			item.mu.Unlock()
+		}
+	}
+
+	summaries := make([]models.ConversationSummary, 0, len(merged))
+	for _, summary := range merged {
+		summaries = append(summaries, summary)
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].LastActivity.Equal(summaries[j].LastActivity) {
+			return summaries[i].ID < summaries[j].ID
+		}
+		return summaries[i].LastActivity.After(summaries[j].LastActivity)
+	})
+	return summaries, nil
 }
 
-func (o *Orchestrator) getOrCreateConversation(id string) *models.Conversation {
+// CreateConversation creates and persists an empty chat so it appears in the
+// sidebar before its first message is sent.
+func (o *Orchestrator) CreateConversation(id string) (*models.Conversation, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("conversation id is required")
+	}
+	o.lifecycleMu.RLock()
+	defer o.lifecycleMu.RUnlock()
+	conversationMu := o.conversationMutex(id)
+	conversationMu.Lock()
+	defer conversationMu.Unlock()
+	conv, err := o.getOrCreateConversation(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.persistConversation(o.rootContext(), id, conv); err != nil {
+		return nil, err
+	}
+	return conv.Clone(), nil
+}
+
+// GetConversation loads one complete conversation, including persisted
+// messages after an application restart.
+func (o *Orchestrator) GetConversation(id string) (*models.Conversation, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("conversation id is required")
+	}
+	o.lifecycleMu.RLock()
+	defer o.lifecycleMu.RUnlock()
+	conversationMu := o.conversationMutex(id)
+	conversationMu.Lock()
+	defer conversationMu.Unlock()
+	conv, found, err := o.findConversation(id)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		// A read must not create live state or a phantom sidebar entry.
+		return models.NewConversation(id), nil
+	}
+	return conv.Clone(), nil
+}
+
+func (o *Orchestrator) conversationMutex(id string) *sync.Mutex {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	if conv, ok := o.conversations[id]; ok {
-		return conv
+	mu := o.conversationLocks[id]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		o.conversationLocks[id] = mu
 	}
+	return mu
+}
+
+func (o *Orchestrator) findConversation(id string) (*models.Conversation, bool, error) {
+	o.mu.RLock()
+	if conv, ok := o.conversations[id]; ok {
+		o.mu.RUnlock()
+		return conv, true, nil
+	}
+	o.mu.RUnlock()
 
 	// Try loading from persistent storage
-	stored, err := o.memory.LoadConversation(o.ctx, id)
-	if err == nil && len(stored) > 0 {
+	stored, err := o.memory.LoadConversationRecord(o.rootContext(), id)
+	if err == nil && stored != nil {
 		conv := models.NewConversation(id)
-		for _, msg := range stored {
+		conv.Title = stored.Title
+		for _, msg := range stored.Messages {
 			conv.Messages = append(conv.Messages, models.Message{
 				Role:      msg.Role,
 				Content:   msg.Content,
 				Timestamp: msg.Timestamp,
+				Internal:  msg.Internal,
 			})
 		}
-		if len(conv.Messages) > 0 {
-			conv.LastActivity = conv.Messages[len(conv.Messages)-1].Timestamp
+		if !stored.LastActivity.IsZero() {
+			conv.LastActivity = stored.LastActivity
 		}
+		o.mu.Lock()
 		o.conversations[id] = conv
-		o.log.Debug("Loaded conversation %s from storage (%d messages)", id, len(stored))
-		return conv
+		o.mu.Unlock()
+		o.log.Debug("Loaded conversation %s from storage (%d messages)", id, len(stored.Messages))
+		return conv, true, nil
 	}
-
-	conv := models.NewConversation(id)
-	o.conversations[id] = conv
-	return conv
+	if err != nil {
+		return nil, false, fmt.Errorf("load conversation %s: %w", id, err)
+	}
+	return nil, false, nil
 }
 
-// saveConversation persists the conversation to SQLite.
-func (o *Orchestrator) saveConversation(id string, conv *models.Conversation) {
+func (o *Orchestrator) getOrCreateConversation(id string) (*models.Conversation, error) {
+	if conv, found, err := o.findConversation(id); err != nil {
+		return nil, err
+	} else if found {
+		return conv, nil
+	}
+	conv := models.NewConversation(id)
+	o.mu.Lock()
+	o.conversations[id] = conv
+	o.mu.Unlock()
+	return conv, nil
+}
+
+func (o *Orchestrator) persistConversation(ctx context.Context, id string, conv *models.Conversation) error {
 	messages := make([]memory.ConversationMessage, len(conv.Messages))
 	for i, msg := range conv.Messages {
 		messages[i] = memory.ConversationMessage{
 			Role:      msg.Role,
 			Content:   msg.Content,
 			Timestamp: msg.Timestamp,
+			Internal:  msg.Internal,
 		}
 	}
-	if err := o.memory.SaveConversation(o.ctx, id, messages); err != nil {
-		o.log.Warn("Failed to persist conversation %s: %v", id, err)
+	return o.memory.SaveConversationRecord(ctx, memory.ConversationRecord{
+		ID:           id,
+		Title:        conv.Title,
+		Messages:     messages,
+		LastActivity: conv.LastActivity,
+	})
+}
+
+func (o *Orchestrator) persistRunSnapshot(id string, conv *models.Conversation) error {
+	ctx, cancel := context.WithTimeout(o.rootContext(), 5*time.Second)
+	defer cancel()
+	if err := o.persistConversation(ctx, id, conv); err != nil {
+		return fmt.Errorf("persist conversation snapshot: %w", err)
 	}
+	return nil
+}
+
+func (o *Orchestrator) persistTerminalStatus(id string, conv *models.Conversation, status string) error {
+	conv.AddMessage(models.RoleSystem, status)
+	return o.persistRunSnapshot(id, conv)
+}
+
+func addUserMessage(conv *models.Conversation, content string) {
+	if conv.Title == "" || conv.Title == "New Conversation" {
+		conv.Title = deriveConversationTitle(content)
+	}
+	conv.AddMessage(models.RoleUser, content)
+}
+
+func deriveConversationTitle(prompt string) string {
+	title := strings.Join(strings.Fields(prompt), " ")
+	title = strings.Trim(title, " \t\r\n\"'`")
+	if title == "" {
+		return "New Conversation"
+	}
+	const maxRunes = 60
+	runes := []rune(title)
+	if len(runes) <= maxRunes {
+		return title
+	}
+	short := strings.TrimSpace(string(runes[:maxRunes-1]))
+	return short + "…"
 }
 
 // maxIterations returns the agent loop ceiling for the current mode.
@@ -653,7 +930,7 @@ func (o *Orchestrator) maxIterations() int {
 // go.mod, package.json, Cargo.toml) in paths referenced by the user prompt and
 // injects their contents as a system prefix. This gives the LLM the same "lay of
 // the land" a human engineer would have before touching a project.
-func (o *Orchestrator) loadProjectContext(prompt string) string {
+func (o *Orchestrator) loadProjectContext(ctx context.Context, prompt string) string {
 	if len(o.workspaceDirs) == 0 {
 		return ""
 	}
@@ -704,7 +981,7 @@ func (o *Orchestrator) loadProjectContext(prompt string) string {
 
 		// Git status — gives the LLM real situational awareness and stops it
 		// clobbering unstaged work or re-creating files that already exist.
-		if gitStatus := runGitStatus(dir); gitStatus != "" {
+		if gitStatus := runGitStatus(ctx, dir); gitStatus != "" {
 			sb.WriteString(fmt.Sprintf("\n[GIT STATUS: %s]\n%s\n[END GIT STATUS]\n", dir, gitStatus))
 		}
 	}
@@ -714,8 +991,8 @@ func (o *Orchestrator) loadProjectContext(prompt string) string {
 
 // runGitStatus runs `git status --short` in a directory and returns the output.
 // Returns empty string if git is unavailable, the dir is not a repo, or it times out.
-func runGitStatus(dir string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func runGitStatus(parent context.Context, dir string) string {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "status", "--short", "--branch")
 	cmd.Dir = dir
@@ -899,7 +1176,10 @@ func looksLikeFilePath(s string) bool {
 	if !strings.HasPrefix(s, "/") {
 		return false
 	}
-	ext := s[strings.LastIndex(s, "."):]
+	ext := filepath.Ext(s)
+	if ext == "" {
+		return false
+	}
 	validExts := []string{".py", ".go", ".js", ".ts", ".tsx", ".jsx", ".json", ".toml", ".yaml", ".yml", ".md", ".sh", ".txt", ".html", ".css"}
 	for _, e := range validExts {
 		if ext == e {
@@ -935,23 +1215,4 @@ func truncateStr(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
-}
-
-// buildMemoryInjection pre-builds the memory injection string once so it
-// doesn't get reconstructed on every loop iteration.
-func buildMemoryInjection(memories []memory.MemoryEntry) string {
-	if len(memories) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	for _, m := range memories {
-		if m.Score >= 0.5 {
-			sb.WriteString(m.Content)
-			sb.WriteString("\n---\n")
-		}
-	}
-	if sb.Len() == 0 {
-		return ""
-	}
-	return "\n\n[SYSTEM MEMORY RECALL]\n" + sb.String()
 }

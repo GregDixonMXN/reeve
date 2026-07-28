@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -62,10 +60,9 @@ type DelegateResult struct {
 	ByteCount  int
 }
 
-// Delegate sends a prompt to the specified cloud provider.
-// If outputPath is non-empty, writes the response directly to disk
-// and returns a short summary (the "workspace bypass").
-func (c *CloudDelegator) Delegate(ctx context.Context, provider, prompt, codeContext, outputPath string) (*DelegateResult, error) {
+// Delegate sends a prompt to the specified cloud provider. The delegator never
+// writes files; its registry caller owns workspace authorization and output.
+func (c *CloudDelegator) Delegate(ctx context.Context, provider, prompt, codeContext string) (*DelegateResult, error) {
 	var content string
 	var err error
 
@@ -92,21 +89,6 @@ func (c *CloudDelegator) Delegate(ctx context.Context, provider, prompt, codeCon
 		Content:   content,
 		ByteCount: len(content),
 		LineCount: strings.Count(content, "\n") + 1,
-	}
-
-	// ── Workspace Bypass ────────────────────────────────────────────────
-	// If output_path is provided, write the response directly to disk
-	// instead of returning it through the local model's context window.
-	if outputPath != "" {
-		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-			return nil, fmt.Errorf("create output dir: %w", err)
-		}
-		if err := os.WriteFile(outputPath, []byte(content), 0644); err != nil {
-			return nil, fmt.Errorf("write output: %w", err)
-		}
-		result.OutputPath = outputPath
-		// Clear the content so it doesn't bloat the tool result
-		result.Content = ""
 	}
 
 	return result, nil
@@ -250,20 +232,20 @@ type geminiResponse struct {
 
 // claudeVisionRequest is a multimodal message with an image + text content block.
 type claudeVisionRequest struct {
-	Model     string              `json:"model"`
-	MaxTokens int                 `json:"max_tokens"`
-	Messages  []claudeVisionMsg   `json:"messages"`
+	Model     string            `json:"model"`
+	MaxTokens int               `json:"max_tokens"`
+	Messages  []claudeVisionMsg `json:"messages"`
 }
 
 type claudeVisionMsg struct {
-	Role    string               `json:"role"`
-	Content []claudeVisionBlock  `json:"content"`
+	Role    string              `json:"role"`
+	Content []claudeVisionBlock `json:"content"`
 }
 
 type claudeVisionBlock struct {
-	Type   string              `json:"type"`
-	Source *claudeImageSource  `json:"source,omitempty"`
-	Text   string              `json:"text,omitempty"`
+	Type   string             `json:"type"`
+	Source *claudeImageSource `json:"source,omitempty"`
+	Text   string             `json:"text,omitempty"`
 }
 
 type claudeImageSource struct {

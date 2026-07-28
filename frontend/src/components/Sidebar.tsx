@@ -1,29 +1,40 @@
 import { Component, createSignal, createEffect, For, Show } from "solid-js";
-
-interface ConversationSummary {
-  id: string;
-  title: string;
-  message_count: number;
-}
+import {
+  CreateConversation,
+  GetConversations,
+  type ConversationSummary,
+} from "../lib/backend";
 
 interface Props {
   activeId: string;
   onSelect: (id: string) => void;
   onToggle: () => void;
+  onBusyChange: (busy: boolean) => void;
+  onHistoryChanged: () => void;
   isOpen: boolean;
+  disabled: boolean;
   refreshKey: number;
 }
 
 const Sidebar: Component<Props> = (props) => {
   const [convos, setConvos] = createSignal<ConversationSummary[]>([]);
+  const [creating, setCreating] = createSignal(false);
+  const [historyError, setHistoryError] = createSignal("");
+  let fetchSequence = 0;
 
   const fetchConvos = async () => {
+    const sequence = ++fetchSequence;
     try {
-      // @ts-ignore — binding generated at wails dev/build time
-      const list = await window.go.main.App.GetConversations();
-      setConvos(list || []);
-    } catch {
-      // No conversations yet — that's fine
+      const list = await GetConversations();
+      if (sequence === fetchSequence) {
+        setConvos(list || []);
+        setHistoryError("");
+      }
+    } catch (err) {
+      console.error("Failed to load conversations:", err);
+      if (sequence === fetchSequence) {
+        setHistoryError(`History unavailable: ${err}`);
+      }
     }
   };
 
@@ -34,14 +45,29 @@ const Sidebar: Component<Props> = (props) => {
     fetchConvos();
   });
 
-  const newChat = () => {
+  const newChat = async () => {
+    if (props.disabled || creating()) return;
+
     const id = crypto.randomUUID();
-    // Add to local list immediately so it appears in sidebar right away
-    setConvos((prev) => [
-      { id, title: "New Chat", message_count: 0 },
-      ...prev,
-    ]);
-    props.onSelect(id);
+    setCreating(true);
+    props.onBusyChange(true);
+    let released = false;
+    try {
+      await CreateConversation(id);
+      setCreating(false);
+      props.onBusyChange(false);
+      released = true;
+      props.onSelect(id);
+      props.onHistoryChanged();
+      await fetchConvos();
+    } catch (err) {
+      alert(`Failed to create conversation: ${err}`);
+    } finally {
+      if (!released) {
+        setCreating(false);
+        props.onBusyChange(false);
+      }
+    }
   };
 
   return (
@@ -77,13 +103,28 @@ const Sidebar: Component<Props> = (props) => {
           <button
             class="w-full py-2 px-3 text-xs font-bold tracking-widest uppercase border border-dashed border-[#3a3a4e] text-gray-400 rounded hover:border-indigo-500 hover:text-indigo-400 transition-colors"
             onClick={newChat}
+            disabled={props.disabled || creating()}
+            classList={{
+              "opacity-40 cursor-not-allowed": props.disabled || creating(),
+            }}
           >
-            + New Chat
+            {creating() ? "Creating..." : "+ New Chat"}
           </button>
         </div>
 
         {/* Conversation List */}
         <div class="flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
+          <Show when={historyError()}>
+            <div class="mx-1 mb-2 rounded border border-red-500/20 bg-red-950/20 p-2 text-[10px] text-red-400">
+              <p class="break-words">{historyError()}</p>
+              <button
+                class="mt-2 uppercase tracking-widest hover:text-red-200"
+                onClick={() => void fetchConvos()}
+              >
+                Retry
+              </button>
+            </div>
+          </Show>
           <For
             each={convos()}
             fallback={
@@ -100,6 +141,17 @@ const Sidebar: Component<Props> = (props) => {
                     : "text-gray-400 hover:bg-[#1a1a24] hover:text-white"
                 }`}
                 onClick={() => props.onSelect(c.id)}
+                disabled={props.disabled || creating()}
+                classList={{
+                  "cursor-not-allowed opacity-50": props.disabled || creating(),
+                }}
+                title={
+                  creating()
+                    ? "Creating a new conversation"
+                    : props.disabled
+                      ? "Finish the current operation before switching chats"
+                      : c.title || "Untitled"
+                }
               >
                 <span class="truncate flex-1 mr-2">{c.title || "Untitled"}</span>
                 <span class="text-[10px] text-gray-600 flex-shrink-0">

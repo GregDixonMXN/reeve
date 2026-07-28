@@ -1,3 +1,6 @@
+@import "tailwindcss";
+
+@layer base {
 :root {
     --bg-primary: #0d0d12;
     --bg-secondary: #16161e;
@@ -32,6 +35,16 @@ body {
     line-height: 1.6;
 }
 
+html,
+body,
+#root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+}
+
+@layer components {
 .app-container {
     display: flex;
     height: 100vh;
@@ -387,4 +400,5 @@ body {
 .send-button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
 }

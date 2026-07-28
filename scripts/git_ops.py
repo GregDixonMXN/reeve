@@ -8,7 +8,8 @@ Called by the Go tool registry via stdin JSON.
 Input:  {"action": "status|diff|log|add|commit|push|branch|checkout", "args": "...", "cwd": "/path/to/repo"}
 Output: Combined stdout+stderr from git command
 
-Safety: Only allows cwd paths starting with /home or /tmp
+Safety: The Go registry anchors cwd to a configured workspace and runs this
+wrapper plus Git children under Landlock/seccomp isolation.
 """
 
 import json
@@ -30,9 +31,9 @@ ALLOWED_ACTIONS = {
 
 
 def is_safe_cwd(cwd: str) -> bool:
-    """Only allow paths starting with /home or /tmp."""
-    abs_cwd = os.path.abspath(cwd)
-    return abs_cwd.startswith("/home") or abs_cwd.startswith("/tmp")
+    """Require an existing absolute canonical directory."""
+    real_cwd = os.path.realpath(cwd)
+    return os.path.isabs(cwd) and cwd == real_cwd and os.path.isdir(real_cwd)
 
 
 def run_git(action: str, args: str, cwd: str) -> str:
@@ -40,7 +41,7 @@ def run_git(action: str, args: str, cwd: str) -> str:
         return json.dumps({"error": f"Unknown action: {action}. Supported: {list(ALLOWED_ACTIONS.keys())}"})
 
     if not is_safe_cwd(cwd):
-        return json.dumps({"error": f"cwd '{cwd}' outside allowed directories (/home, /tmp)"})
+        return json.dumps({"error": f"cwd '{cwd}' is not an absolute canonical directory"})
 
     if not os.path.isdir(cwd):
         return json.dumps({"error": f"Directory does not exist: {cwd}"})

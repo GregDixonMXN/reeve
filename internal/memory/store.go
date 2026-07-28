@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -42,12 +44,22 @@ type ConversationMessage struct {
 	Role      string
 	Content   string
 	Timestamp time.Time
+	Internal  bool
 }
 
 // ConversationSummary provides a brief overview of a conversation.
 type ConversationSummary struct {
 	ID           string
+	Title        string
 	MessageCount int
+	LastActivity time.Time
+}
+
+// ConversationRecord is the complete persisted representation of a chat.
+type ConversationRecord struct {
+	ID           string
+	Title        string
+	Messages     []ConversationMessage
 	LastActivity time.Time
 }
 
@@ -66,9 +78,27 @@ func init() {
 }
 
 func NewStore(cfg config.DatabaseConfig, embedder *Embedder) (*Store, error) {
+	if cfg.Encrypted || strings.TrimSpace(cfg.Passphrase) != "" {
+		return nil, fmt.Errorf("database encryption is not supported by this build; refusing to store data in plaintext")
+	}
 	dsn := cfg.Path
 	if dsn == "" {
 		dsn = ":memory:"
+	}
+	if dsn != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(dsn), 0700); err != nil {
+			return nil, fmt.Errorf("create database directory: %w", err)
+		}
+		file, err := os.OpenFile(dsn, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			return nil, fmt.Errorf("secure database file: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("close database file: %w", err)
+		}
+		if err := os.Chmod(dsn, 0600); err != nil {
+			return nil, fmt.Errorf("restrict database permissions: %w", err)
+		}
 	}
 
 	db, err := sql.Open("sqlite3", dsn)
@@ -79,13 +109,23 @@ func NewStore(cfg config.DatabaseConfig, embedder *Embedder) (*Store, error) {
 	// Verify sqlite-vec loaded
 	var vecVersion string
 	if err := db.QueryRow("SELECT vec_version()").Scan(&vecVersion); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("sqlite-vec not loaded: %w", err)
 	}
 	fmt.Printf("[MEMORY] sqlite-vec %s loaded\n", vecVersion)
 
 	// Enable WAL for concurrent read performance
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
+	}
+	if dsn != ":memory:" {
+		for _, path := range []string{dsn, dsn + "-wal", dsn + "-shm"} {
+			if err := os.Chmod(path, 0600); err != nil && !os.IsNotExist(err) {
+				db.Close()
+				return nil, fmt.Errorf("restrict database artifact permissions: %w", err)
+			}
+		}
 	}
 
 	dim := cfg.VecDim
@@ -96,6 +136,7 @@ func NewStore(cfg config.DatabaseConfig, embedder *Embedder) (*Store, error) {
 	s := &Store{db: db, embedder: embedder, vecDim: dim}
 
 	if err := s.migrate(); err != nil {
+		db.Close()
 		return nil, err
 	}
 
@@ -210,10 +251,10 @@ func (s *Store) WipeAll() error {
 		return err
 	}
 
-	// 4. Run VACUUM to physically shrink the .db file and remove artifacts
-	if _, err := s.db.Exec("VACUUM"); err != nil {
-		return fmt.Errorf("failed to vacuum database: %w", err)
-	}
+	// Reclaiming pages is maintenance, not part of the logical wipe. Deletions
+	// are already committed, so a VACUUM failure must not report the purge as
+	// failed and leave live objects eligible to repopulate the database.
+	_, _ = s.db.Exec("VACUUM")
 
 	return nil
 }
@@ -230,6 +271,7 @@ func (s *Store) migrate() error {
 
 	CREATE TABLE IF NOT EXISTS conversations (
 		id             TEXT PRIMARY KEY,
+		title          TEXT NOT NULL DEFAULT 'New Conversation',
 		last_activity  DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -238,7 +280,8 @@ func (s *Store) migrate() error {
 		conv_id    TEXT NOT NULL,
 		role       TEXT NOT NULL,
 		content    TEXT NOT NULL,
-		timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP
+		timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP,
+		internal   INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS projects (
@@ -257,6 +300,31 @@ func (s *Store) migrate() error {
 	// Ensure conversations table has last_activity column (migration for existing DBs)
 	if err := s.ensureColumn("conversations", "last_activity", "DATETIME DEFAULT CURRENT_TIMESTAMP"); err != nil {
 		return fmt.Errorf("column migration (last_activity): %w", err)
+	}
+	if err := s.ensureColumn("conversations", "title", "TEXT NOT NULL DEFAULT 'New Conversation'"); err != nil {
+		return fmt.Errorf("column migration (conversation title): %w", err)
+	}
+	if err := s.ensureColumn("conversation_messages", "internal", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("column migration (conversation message visibility): %w", err)
+	}
+	// Classify protocol messages written by older releases. A tool intent is an
+	// assistant message immediately followed by a tool result.
+	if _, err := s.db.Exec(`
+		UPDATE conversation_messages AS current
+		SET internal = 1
+		WHERE internal = 0 AND (
+			role = 'tool' OR (
+				role = 'assistant' AND EXISTS (
+					SELECT 1 FROM conversation_messages AS next
+					WHERE next.id = (
+						SELECT MIN(later.id) FROM conversation_messages AS later
+						WHERE later.conv_id = current.conv_id AND later.id > current.id
+					) AND next.role = 'tool'
+				)
+			)
+		)
+	`); err != nil {
+		return fmt.Errorf("classify legacy conversation messages: %w", err)
 	}
 
 	// ── Column migrations ─────────────────────────────────────────────────────
@@ -720,10 +788,35 @@ func (s *Store) VectorCount() (int, error) {
 
 // ─── Conversation Persistence ───────────────────────────────────────────────
 
-// SaveConversation persists a conversation's messages to SQLite.
+// SaveConversation persists a conversation's messages to SQLite. It is kept
+// for compatibility with older callers; new code should use
+// SaveConversationRecord so title and activity metadata are retained.
 func (s *Store) SaveConversation(ctx context.Context, id string, messages []ConversationMessage) error {
+	lastActivity := time.Now()
+	if len(messages) > 0 && !messages[len(messages)-1].Timestamp.IsZero() {
+		lastActivity = messages[len(messages)-1].Timestamp
+	}
+	return s.SaveConversationRecord(ctx, ConversationRecord{
+		ID:           id,
+		Title:        "New Conversation",
+		Messages:     messages,
+		LastActivity: lastActivity,
+	})
+}
+
+// SaveConversationRecord atomically persists a conversation and its messages.
+func (s *Store) SaveConversationRecord(ctx context.Context, record ConversationRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.TrimSpace(record.ID) == "" {
+		return fmt.Errorf("conversation id is required")
+	}
+	if strings.TrimSpace(record.Title) == "" {
+		record.Title = "New Conversation"
+	}
+	if record.LastActivity.IsZero() {
+		record.LastActivity = time.Now()
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -733,23 +826,25 @@ func (s *Store) SaveConversation(ctx context.Context, id string, messages []Conv
 
 	// Upsert conversation record
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO conversations (id, last_activity) VALUES (?, CURRENT_TIMESTAMP)
-		ON CONFLICT(id) DO UPDATE SET last_activity = CURRENT_TIMESTAMP
-	`, id)
+		INSERT INTO conversations (id, title, last_activity) VALUES (?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			title = excluded.title,
+			last_activity = excluded.last_activity
+	`, record.ID, record.Title, record.LastActivity)
 	if err != nil {
 		return fmt.Errorf("upsert conversation: %w", err)
 	}
 
 	// Clear existing messages and insert fresh
-	_, err = tx.ExecContext(ctx, "DELETE FROM conversation_messages WHERE conv_id = ?", id)
+	_, err = tx.ExecContext(ctx, "DELETE FROM conversation_messages WHERE conv_id = ?", record.ID)
 	if err != nil {
 		return fmt.Errorf("clear messages: %w", err)
 	}
 
-	for _, msg := range messages {
+	for _, msg := range record.Messages {
 		_, err = tx.ExecContext(ctx,
-			"INSERT INTO conversation_messages (conv_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-			id, msg.Role, msg.Content, msg.Timestamp,
+			"INSERT INTO conversation_messages (conv_id, role, content, timestamp, internal) VALUES (?, ?, ?, ?, ?)",
+			record.ID, msg.Role, msg.Content, msg.Timestamp, msg.Internal,
 		)
 		if err != nil {
 			return fmt.Errorf("insert message: %w", err)
@@ -759,13 +854,27 @@ func (s *Store) SaveConversation(ctx context.Context, id string, messages []Conv
 	return tx.Commit()
 }
 
-// LoadConversation retrieves a conversation's messages from SQLite.
-func (s *Store) LoadConversation(ctx context.Context, id string) ([]ConversationMessage, error) {
+// LoadConversationRecord retrieves a conversation and all of its messages.
+func (s *Store) LoadConversationRecord(ctx context.Context, id string) (*ConversationRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	var record ConversationRecord
+	record.ID = id
+	err := s.db.QueryRowContext(ctx, `
+		SELECT title, last_activity
+		FROM conversations
+		WHERE id = ?
+	`, id).Scan(&record.Title, &record.LastActivity)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT role, content, timestamp
+		SELECT role, content, timestamp, internal
 		FROM conversation_messages
 		WHERE conv_id = ?
 		ORDER BY id ASC
@@ -775,15 +884,29 @@ func (s *Store) LoadConversation(ctx context.Context, id string) ([]Conversation
 	}
 	defer rows.Close()
 
-	var messages []ConversationMessage
 	for rows.Next() {
 		var msg ConversationMessage
-		if err := rows.Scan(&msg.Role, &msg.Content, &msg.Timestamp); err != nil {
-			continue
+		if err := rows.Scan(&msg.Role, &msg.Content, &msg.Timestamp, &msg.Internal); err != nil {
+			return nil, err
 		}
-		messages = append(messages, msg)
+		record.Messages = append(record.Messages, msg)
 	}
-	return messages, nil
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// LoadConversation retrieves a conversation's messages from SQLite.
+func (s *Store) LoadConversation(ctx context.Context, id string) ([]ConversationMessage, error) {
+	record, err := s.LoadConversationRecord(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, nil
+	}
+	return record.Messages, nil
 }
 
 // ListConversations returns summaries of all stored conversations.
@@ -792,10 +915,11 @@ func (s *Store) ListConversations(ctx context.Context) ([]ConversationSummary, e
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id, c.last_activity, COUNT(m.id) as msg_count
+		SELECT c.id, c.title, c.last_activity,
+		       SUM(CASE WHEN m.id IS NOT NULL AND m.internal = 0 THEN 1 ELSE 0 END) as msg_count
 		FROM conversations c
 		LEFT JOIN conversation_messages m ON c.id = m.conv_id
-		GROUP BY c.id
+		GROUP BY c.id, c.title, c.last_activity
 		ORDER BY c.last_activity DESC
 	`)
 	if err != nil {
@@ -806,10 +930,13 @@ func (s *Store) ListConversations(ctx context.Context) ([]ConversationSummary, e
 	var summaries []ConversationSummary
 	for rows.Next() {
 		var s ConversationSummary
-		if err := rows.Scan(&s.ID, &s.LastActivity, &s.MessageCount); err != nil {
-			continue
+		if err := rows.Scan(&s.ID, &s.Title, &s.LastActivity, &s.MessageCount); err != nil {
+			return nil, err
 		}
 		summaries = append(summaries, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return summaries, nil
 }
