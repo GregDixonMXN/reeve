@@ -60,7 +60,7 @@ mojo_path        = ""
 mojo_kernels_dir = "mojo/kernels"
 python_path      = "~/.axiom/venv/bin/python"
 wolfram_app_id   = ""
-allowed_dirs = ["/home/shki/projects", "/home/shki/Documents", "/home/shki/Desktop"]
+allowed_dirs = ["~/projects", "~/Documents", "~/Desktop"]
 max_exec_time_sec = 300
 max_file_size     = 10485760
 max_output_bytes  = 1048576
@@ -76,7 +76,7 @@ allow_network     = true
 enabled = true
 # Fail closed if Linux Landlock/seccomp cannot be established.
 require_os_isolation = true
-allowed_dirs    = ["/home/shki/projects", "/home/shki/Documents", "/home/shki/Desktop"]
+allowed_dirs    = ["~/projects", "~/Documents", "~/Desktop"]
 blocked_patterns = ["rm -rf", "sudo"]
 allowed_binaries = [
     "python3", "python", "pip", "pip3",
