@@ -13,7 +13,7 @@ const sandboxHelperArgument = "__axiom_sandbox_exec"
 const (
 	defaultSandboxCPUTimeSec     = 60
 	defaultSandboxMaxMemoryBytes = int64(8 * 1024 * 1024 * 1024)
-	defaultSandboxMaxProcesses   = 1024
+	defaultSandboxMaxProcesses   = 4096
 	defaultSandboxMaxFileSize    = int64(1024 * 1024 * 1024)
 	defaultSandboxMaxOpenFiles   = 1024
 )

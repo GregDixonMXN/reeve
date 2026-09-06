@@ -191,6 +191,17 @@ func readonlyRuntimePaths(commandPath, invocationPath string) []string {
 	for _, key := range []string{"GOROOT", "RUSTUP_HOME", "NODE_PATH"} {
 		paths = append(paths, os.Getenv(key))
 	}
+	// Resolve the effective GOROOT from the toolchain itself. `go env`
+	// honors GOTOOLCHAIN switches, where $GOROOT is usually unset and the
+	// real root may live in the module cache or /opt. Without this, the
+	// compile tool is invisible inside the sandbox and isolated builds fail.
+	if filepath.Base(commandPath) == "go" {
+		if out, err := exec.Command(commandPath, "env", "GOROOT").Output(); err == nil {
+			if root := strings.TrimSpace(string(out)); filepath.IsAbs(root) {
+				paths = append(paths, root)
+			}
+		}
+	}
 	if goPath := os.Getenv("GOPATH"); goPath != "" {
 		for _, root := range filepath.SplitList(goPath) {
 			paths = append(paths, filepath.Join(root, "bin"), filepath.Join(root, "pkg", "mod"))
