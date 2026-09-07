@@ -22,13 +22,13 @@ jobs:
       # model and credential findings have been remediated.
       - name: Check out source without model artifacts
         env:
-          AXIOM_GITHUB_TOKEN: ${{ github.token }}
+          HERALD_GITHUB_TOKEN: ${{ github.token }}
         run: |
           git init .
           git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
           git sparse-checkout init --no-cone
           git sparse-checkout set --no-cone '/*' '!/models/'
-          authorization="$(printf 'x-access-token:%s' "${AXIOM_GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          authorization="$(printf 'x-access-token:%s' "${HERALD_GITHUB_TOKEN}" | base64 | tr -d '\n')"
           git \
             -c protocol.version=2 \
             -c "http.extraheader=AUTHORIZATION: basic ${authorization}" \
@@ -83,9 +83,9 @@ jobs:
 
       - name: Inspect build without publishing
         run: |
-          test -x build/bin/axiom
-          file build/bin/axiom
-          sha256sum build/bin/axiom
+          test -x build/bin/herald
+          file build/bin/herald
+          sha256sum build/bin/herald
           {
             echo "### Release readiness only"
             echo

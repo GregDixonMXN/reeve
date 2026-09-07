@@ -1,11 +1,11 @@
 {
-  "name": "axiom",
-  "outputfilename": "axiom",
+  "name": "herald",
+  "outputfilename": "herald",
   "frontend:install": "npm ci",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "Axiom Team"
+    "name": "Herald Team"
   }
 }

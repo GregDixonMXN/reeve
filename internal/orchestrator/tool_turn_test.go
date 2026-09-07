@@ -10,12 +10,12 @@ import (
 	"sync"
 	"testing"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/config"
-	"axiom/internal/guardrail"
-	"axiom/internal/tools"
-	"axiom/pkg/logger"
-	"axiom/pkg/models"
+	"herald/internal/cognitive"
+	"herald/internal/config"
+	"herald/internal/guardrail"
+	"herald/internal/tools"
+	"herald/pkg/logger"
+	"herald/pkg/models"
 )
 
 type sequenceRunner struct {

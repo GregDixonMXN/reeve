@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/config"
-	"axiom/internal/guardrail"
-	"axiom/internal/memory"
-	"axiom/internal/orchestrator"
-	"axiom/internal/tools"
-	"axiom/pkg/logger"
-	"axiom/pkg/models"
+	"herald/internal/cognitive"
+	"herald/internal/config"
+	"herald/internal/guardrail"
+	"herald/internal/memory"
+	"herald/internal/orchestrator"
+	"herald/internal/tools"
+	"herald/pkg/logger"
+	"herald/pkg/models"
 )
 
 type appTestRunner struct{ called bool }
@@ -58,14 +58,14 @@ func (c *blockingRunCancellationCoordinator) ClearQueuedAgentLoopCancellation(co
 
 func TestFindConfigPathMarksExplicitSelectionRequired(t *testing.T) {
 	explicit := filepath.Join(t.TempDir(), "missing.toml")
-	t.Setenv("AXIOM_CONFIG", "  "+explicit+"  ")
+	t.Setenv("HERALD_CONFIG", "  "+explicit+"  ")
 
 	path, required := findConfigPath()
 	if path != explicit {
 		t.Fatalf("findConfigPath path = %q, want %q", path, explicit)
 	}
 	if !required {
-		t.Fatal("explicit AXIOM_CONFIG was not marked required")
+		t.Fatal("explicit HERALD_CONFIG was not marked required")
 	}
 }
 

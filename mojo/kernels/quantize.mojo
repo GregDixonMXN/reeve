@@ -1,5 +1,5 @@
 """
-Axiom Quantization Kernel
+Herald Quantization Kernel
 ═════════════════════════
 SIMD-accelerated vector quantization for memory-efficient storage.
 

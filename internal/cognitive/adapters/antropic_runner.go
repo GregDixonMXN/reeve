@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"time"
 
-	"axiom/pkg/models"
+	"herald/pkg/models"
 )
 
 // AnthropicRunner implements cognitive.LLMRunner using the Anthropic Messages API.
 // Used in "Cloud" mode where Claude drives the entire Think-Verify-Act loop.
-// Claude receives Axiom's tools as native tool definitions with input_schema,
+// Claude receives Herald's tools as native tool definitions with input_schema,
 // and returns tool_use blocks when it wants to call a tool.
 type AnthropicRunner struct {
 	apiKey    string
@@ -104,17 +104,17 @@ type anthropicResponse struct {
 
 // ─── LLMRunner Interface ────────────────────────────────────────────────────
 
-// Generate sends a prompt to Claude and parses the response into Axiom's format.
+// Generate sends a prompt to Claude and parses the response into Herald's format.
 // Claude returns either text (for direct answers) or tool_use blocks (for tool calls).
 func (r *AnthropicRunner) Generate(ctx context.Context, prompt string, toolDefs []models.ToolDefinition) (*models.LLMResponse, error) {
-	// Build native Claude tools from Axiom's tool definitions
+	// Build native Claude tools from Herald's tool definitions
 	claudeTools := r.convertTools(toolDefs)
 
 	// Build messages — we receive the full formatted prompt from the cognitive engine
 	reqBody := anthropicRequest{
 		Model:     r.model,
 		MaxTokens: r.maxTokens,
-		System: `You are Axiom, an AI agent with access to tools for file operations, code execution, web search, and cloud delegation.
+		System: `You are Herald, an AI agent with access to tools for file operations, code execution, web search, and cloud delegation.
 
 When asked to perform a task:
 1. Think step by step about what tools you need
@@ -170,7 +170,7 @@ Always respond with valid JSON matching this schema:
 	return r.parseResponse(&result)
 }
 
-// parseResponse converts Claude's response into Axiom's LLMResponse format.
+// parseResponse converts Claude's response into Herald's LLMResponse format.
 func (r *AnthropicRunner) parseResponse(resp *anthropicResponse) (*models.LLMResponse, error) {
 	if err := validateSingleToolUse(resp); err != nil {
 		return nil, err
@@ -181,7 +181,7 @@ func (r *AnthropicRunner) parseResponse(resp *anthropicResponse) (*models.LLMRes
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "text":
-			// Try to parse as Axiom's structured JSON format
+			// Try to parse as Herald's structured JSON format
 			var structured struct {
 				Reasoning string `json:"reasoning"`
 				ToolCall  *struct {
@@ -228,7 +228,7 @@ func (r *AnthropicRunner) parseResponse(resp *anthropicResponse) (*models.LLMRes
 	return llmResp, nil
 }
 
-// convertTools translates Axiom tool definitions into Claude's native format.
+// convertTools translates Herald tool definitions into Claude's native format.
 func (r *AnthropicRunner) convertTools(defs []models.ToolDefinition) []anthropicTool {
 	if len(defs) == 0 {
 		return nil
@@ -319,12 +319,12 @@ func (r *AnthropicRunner) CompleteWithTools(
 		return "", fmt.Errorf("anthropic: %s", result.Error.Message)
 	}
 
-	// Serialize Claude's native response back to Axiom's JSON format so that
+	// Serialize Claude's native response back to Herald's JSON format so that
 	// the cognitive engine's parseResponse() can handle it uniformly.
-	return r.serializeToAxiomJSON(&result)
+	return r.serializeToHeraldJSON(&result)
 }
 
-// convertMessages translates Axiom's flat []models.Message into the
+// convertMessages translates Herald's flat []models.Message into the
 // alternating user/assistant format Anthropic's API requires.
 //
 // Critical invariant: a tool_result block MUST be immediately preceded by an
@@ -346,7 +346,7 @@ func (r *AnthropicRunner) convertMessages(messages []models.Message) ([]anthropi
 			i++
 
 		case models.RoleAssistant:
-			// Try to parse Axiom's stored JSON format to detect a tool call.
+			// Try to parse Herald's stored JSON format to detect a tool call.
 			var assistantJSON struct {
 				Reasoning string `json:"reasoning"`
 				ToolCall  *struct {
@@ -365,7 +365,7 @@ func (r *AnthropicRunner) convertMessages(messages []models.Message) ([]anthropi
 				// Emit assistant message with a proper tool_use block, then pair
 				// the following tool result as a user tool_result block.
 				toolUseCounter++
-				toolUseID := fmt.Sprintf("axiom_tool_%d", toolUseCounter)
+				toolUseID := fmt.Sprintf("herald_tool_%d", toolUseCounter)
 
 				var assistantBlocks []contentBlock
 				// Prepend a text block for any reasoning/content
@@ -489,21 +489,21 @@ func mergeConsecutiveRoles(messages []anthropicMessage) []anthropicMessage {
 	return merged
 }
 
-// serializeToAxiomJSON converts Claude's native API response back to Axiom's
+// serializeToHeraldJSON converts Claude's native API response back to Herald's
 // internal JSON format: {"reasoning":"...","tool_call":{...}|null,"content":"..."}.
 // This lets the cognitive engine's parseResponse() handle cloud and local responses uniformly.
-func (r *AnthropicRunner) serializeToAxiomJSON(resp *anthropicResponse) (string, error) {
+func (r *AnthropicRunner) serializeToHeraldJSON(resp *anthropicResponse) (string, error) {
 	if err := validateSingleToolUse(resp); err != nil {
 		return "", err
 	}
 
-	type axiomOutput struct {
+	type heraldOutput struct {
 		Reasoning string      `json:"reasoning"`
 		ToolCall  interface{} `json:"tool_call"`
 		Content   string      `json:"content"`
 	}
 
-	out := axiomOutput{ToolCall: nil}
+	out := heraldOutput{ToolCall: nil}
 
 	for _, block := range resp.Content {
 		switch block.Type {
@@ -527,12 +527,12 @@ func (r *AnthropicRunner) serializeToAxiomJSON(resp *anthropicResponse) (string,
 
 	result, err := json.Marshal(out)
 	if err != nil {
-		return "", fmt.Errorf("serialize axiom JSON: %w", err)
+		return "", fmt.Errorf("serialize herald JSON: %w", err)
 	}
 	return string(result), nil
 }
 
-// validateSingleToolUse enforces Axiom's sequential execution contract. Claude
+// validateSingleToolUse enforces Herald's sequential execution contract. Claude
 // may return parallel tool_use blocks, but the orchestrator can execute and
 // correlate only one tool call per model turn. Rejecting the response avoids
 // silently discarding all but the last requested action.
@@ -545,7 +545,7 @@ func validateSingleToolUse(resp *anthropicResponse) error {
 	}
 
 	if toolUses > 1 {
-		return fmt.Errorf("anthropic returned %d tool_use blocks; Axiom supports one tool call per turn", toolUses)
+		return fmt.Errorf("anthropic returned %d tool_use blocks; Herald supports one tool call per turn", toolUses)
 	}
 	return nil
 }
@@ -558,7 +558,7 @@ func (r *AnthropicRunner) Complete(ctx context.Context, prompt string, _ int) (s
 	reqBody := anthropicRequest{
 		Model:     r.model,
 		MaxTokens: r.maxTokens,
-		// We pass the raw prompt (which includes Axiom's system instructions and tools)
+		// We pass the raw prompt (which includes Herald's system instructions and tools)
 		// directly to Claude as a user message.
 		Messages: []anthropicMessage{
 			{Role: "user", Content: prompt},

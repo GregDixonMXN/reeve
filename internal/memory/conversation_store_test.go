@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"axiom/internal/config"
+	"herald/internal/config"
 )
 
 func openConversationTestStore(t *testing.T, path string) *Store {
@@ -30,7 +30,7 @@ func TestConversationRecordSurvivesRestart(t *testing.T) {
 	wantTime := time.Date(2026, 7, 18, 12, 30, 0, 0, time.UTC)
 	want := ConversationRecord{
 		ID:           "conv-1",
-		Title:        "Repair Axiom persistence",
+		Title:        "Repair Herald persistence",
 		LastActivity: wantTime,
 		Messages: []ConversationMessage{
 			{Role: "user", Content: "Repair persistence", Timestamp: wantTime.Add(-time.Minute)},

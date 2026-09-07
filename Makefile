@@ -7,8 +7,8 @@ GO_BIN := $(shell go env GOPATH)/bin
 endif
 WAILS ?= $(GO_BIN)/wails
 PYTHON ?= python3
-AXIOM_DATA_DIR ?= $(HOME)/.axiom
-VENV ?= $(AXIOM_DATA_DIR)/venv
+HERALD_DATA_DIR ?= $(HOME)/.herald
+VENV ?= $(HERALD_DATA_DIR)/venv
 VENV_PYTHON := $(VENV)/bin/python
 
 .PHONY: dev build clean test setup
@@ -39,10 +39,10 @@ setup:
 	$(PYTHON) -m venv "$(VENV)"
 	"$(VENV_PYTHON)" -m pip install --requirement requirements.txt
 	@echo "── Creating data directory ──"
-	mkdir -p "$(AXIOM_DATA_DIR)/models"
+	mkdir -p "$(HERALD_DATA_DIR)/models"
 	@echo ""
 	@echo "── Setup complete! ──"
 	@echo "Next steps:"
-	@echo "  1. Copy config: cp axiom.example.toml axiom.toml"
-	@echo "  2. Export AXIOM_OPENAI_API_KEY (or OPENAI_API_KEY)"
+	@echo "  1. Copy config: cp herald.example.toml herald.toml"
+	@echo "  2. Export HERALD_OPENAI_API_KEY (or OPENAI_API_KEY)"
 	@echo "  3. Run: make dev"

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"axiom/internal/config"
-	"axiom/internal/memory"
-	"axiom/pkg/models"
+	"herald/internal/config"
+	"herald/internal/memory"
+	"herald/pkg/models"
 )
 
 type tokenLimitRecorder struct {

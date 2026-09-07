@@ -18,9 +18,9 @@ __pycache__/
 *.log
 
 # Config secrets / overrides
-axiom.toml
-axiom.local.toml
-AXIOM.md
+herald.toml
+herald.local.toml
+HERALD.md
 .env
 .env.*
 !.env.example

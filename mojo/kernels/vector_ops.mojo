@@ -1,5 +1,5 @@
 """
-Axiom Vector Operations Kernel
+Herald Vector Operations Kernel
 ═══════════════════════════════
 SIMD-accelerated vector math for the RAG memory pipeline.
 Replaces Python/numpy for all vector similarity operations.

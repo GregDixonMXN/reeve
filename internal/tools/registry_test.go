@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"axiom/internal/config"
-	"axiom/internal/guardrail"
-	"axiom/pkg/models"
+	"herald/internal/config"
+	"herald/internal/guardrail"
+	"herald/pkg/models"
 )
 
 type registryRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -277,7 +277,7 @@ func TestSearchMemoryCapsLimitAndOutput(t *testing.T) {
 	r := NewRegistry(config.ToolsConfig{MaxExecTimeSec: 5, MaxOutputBytes: 80}, nil, nil)
 	r.SetMemory(recorder)
 	result, err := r.searchMemory(context.Background(), map[string]interface{}{
-		"query": "axiom",
+		"query": "herald",
 		"limit": float64(10_000),
 	})
 	if err != nil {

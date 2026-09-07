@@ -52,7 +52,7 @@ type LoopStep = {
 };
 
 type Message = {
-  role: "user" | "axiom" | "tool";
+  role: "user" | "herald" | "tool";
   content: string;
   reasoning?: string;
   tools_used?: string[];
@@ -122,7 +122,7 @@ function restoredMessage(message: StoredMessage): Message {
     message.role === "user"
       ? "user"
       : message.role === "assistant"
-        ? "axiom"
+        ? "herald"
         : "tool";
   const timestamp = new Date(message.timestamp);
 
@@ -225,7 +225,7 @@ const ChatPanel: Component<{
   });
 
   onMount(() => {
-    stopLoopEvents = EventsOn("axiom:loop_event", (event: LoopEvent) => {
+    stopLoopEvents = EventsOn("herald:loop_event", (event: LoopEvent) => {
       if (!eventBelongsToActiveRun(event)) return;
 
       if (event.kind === "thinking" && streamIteration() !== event.iteration) {
@@ -247,7 +247,7 @@ const ChatPanel: Component<{
       );
     });
 
-    stopTokenEvents = EventsOn("axiom:token", (event: TokenEvent) => {
+    stopTokenEvents = EventsOn("herald:token", (event: TokenEvent) => {
       if (!eventBelongsToActiveRun(event) || !event.token) return;
       setStreamedContent((content) => content + event.token);
     });
@@ -373,7 +373,7 @@ const ChatPanel: Component<{
       setConversation((previous) => [
         ...previous,
         {
-          role: "axiom",
+          role: "herald",
           content: response.content || "Action completed.",
           reasoning: [reasoning, traceText]
             .filter(Boolean)
@@ -482,7 +482,7 @@ const ChatPanel: Component<{
       return;
     }
 
-    let text = `AXIOM CHAT EXPORT\nSession: ${props.conversationId}\nExported: ${new Date().toISOString()}\n\n`;
+    let text = `HERALD CHAT EXPORT\nSession: ${props.conversationId}\nExported: ${new Date().toISOString()}\n\n`;
     text += `${"=".repeat(80)}\n\n`;
     for (const message of messages) {
       text += `[${message.timestamp.toLocaleString()}] ${message.role.toUpperCase()}:\n${message.content}\n`;
@@ -497,7 +497,7 @@ const ChatPanel: Component<{
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `axiom_chat_${props.conversationId}_${Date.now()}.txt`;
+    anchor.download = `herald_chat_${props.conversationId}_${Date.now()}.txt`;
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
@@ -549,7 +549,7 @@ const ChatPanel: Component<{
             }}
           />
           <span class="text-[10px] text-gray-400 font-bold tracking-widest uppercase">
-            Axiom v1.0 // {providerLabel()}
+            Herald v1.0 // {providerLabel()}
             <Show when={runtimeStatus()?.model}>
               {" • "}
               {runtimeStatus()!.model}
@@ -647,7 +647,7 @@ const ChatPanel: Component<{
         >
           <div class="flex flex-col items-center justify-center h-full gap-3 text-gray-600 select-none">
             <div class="text-4xl opacity-40">⚡</div>
-            <p class="text-xs uppercase tracking-widest">Axiom ready</p>
+            <p class="text-xs uppercase tracking-widest">Herald ready</p>
             <p class="text-[10px] text-gray-700">Enter a command below</p>
           </div>
         </Show>
@@ -668,8 +668,8 @@ const ChatPanel: Component<{
                       : "text-green-500/70"
                 }`}
               >
-                {message.role === "axiom"
-                  ? "▸ Axiom"
+                {message.role === "herald"
+                  ? "▸ Herald"
                   : message.role === "tool"
                     ? "⚡ Tool"
                     : "You"}
@@ -684,7 +684,7 @@ const ChatPanel: Component<{
                       : "w-full max-w-[90%]"
                 }`}
               >
-                <Show when={message.role === "axiom" && message.reasoning}>
+                <Show when={message.role === "herald" && message.reasoning}>
                   <details class="mb-3 group">
                     <summary class="text-[10px] text-green-500/50 cursor-pointer hover:text-green-400 uppercase tracking-widest list-none flex items-center gap-2 select-none">
                       <span class="inline-block group-open:rotate-90 transition-transform duration-150">
@@ -709,7 +709,7 @@ const ChatPanel: Component<{
 
                 <p
                   class={`whitespace-pre-wrap break-words leading-relaxed ${
-                    message.role === "axiom" ? "text-gray-200" : ""
+                    message.role === "herald" ? "text-gray-200" : ""
                   }`}
                 >
                   {message.content}
@@ -717,7 +717,7 @@ const ChatPanel: Component<{
 
                 <Show
                   when={
-                    message.role === "axiom" &&
+                    message.role === "herald" &&
                     (message.latency_ms || message.memory_recalled)
                   }
                 >
@@ -744,7 +744,7 @@ const ChatPanel: Component<{
         >
           <div class="flex flex-col gap-1 items-start">
             <span class="text-[10px] font-bold uppercase tracking-widest text-green-500/70">
-              ▸ Axiom // live
+              ▸ Herald // live
             </span>
             <div class="w-full max-w-[90%] text-gray-300 whitespace-pre-wrap break-words leading-relaxed">
               {streamedContent()}

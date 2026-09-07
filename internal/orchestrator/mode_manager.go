@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"sync"
 
-	"axiom/internal/cognitive"
+	"herald/internal/cognitive"
 )
 
-// Mode represents Axiom's operating mode.
+// Mode represents Herald's operating mode.
 type Mode string
 
 const (
@@ -16,7 +16,7 @@ const (
 	ModeLocal Mode = "local"
 
 	// ModeHybrid uses the local LLM with cloud delegation available.
-	// Axiom routes complex work to the configured cloud provider.
+	// Herald routes complex work to the configured cloud provider.
 	ModeHybrid Mode = "hybrid"
 
 	// ModeCloud uses the configured cloud provider as the primary LLM.
@@ -74,7 +74,7 @@ func NewModeManager(cfg ModeManagerConfig) *ModeManager {
 	return mm
 }
 
-// SetMode switches Axiom's operating mode.
+// SetMode switches Herald's operating mode.
 // Returns an error if the requested mode requires unavailable resources.
 func (mm *ModeManager) SetMode(mode Mode) error {
 	mm.mu.Lock()

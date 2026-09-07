@@ -14,7 +14,7 @@ import (
 const ollamaHealthErrorLimit = int64(8 * 1024)
 
 // CheckOllamaModel verifies both that an Ollama server is reachable and that
-// the exact configured model tag is installed. Axiom performs this preflight
+// the exact configured model tag is installed. Herald performs this preflight
 // before advertising local mode as ready.
 func CheckOllamaModel(ctx context.Context, baseURL, model string, timeout time.Duration) error {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")

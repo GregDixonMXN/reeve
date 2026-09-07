@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"axiom/pkg/models"
+	"herald/pkg/models"
 )
 
 type capturedOpenAIRequest struct {
@@ -72,9 +72,9 @@ func TestOpenAIRunnerBuildsResponsesRequestAndParsesText(t *testing.T) {
 		t.Fatalf("CompleteWithToolsForConversation() error = %v", err)
 	}
 
-	var output openAIAxiomOutput
+	var output openAIHeraldOutput
 	if err := json.Unmarshal([]byte(raw), &output); err != nil {
-		t.Fatalf("decode Axiom output: %v", err)
+		t.Fatalf("decode Herald output: %v", err)
 	}
 	if output.Content != "done" || output.ToolCall != nil {
 		t.Fatalf("output = %#v, want final content %q", output, "done")
@@ -229,7 +229,7 @@ func TestOpenAIRunnerPreservesRawOutputAcrossToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first completion error = %v", err)
 	}
-	var first openAIAxiomOutput
+	var first openAIHeraldOutput
 	if err := json.Unmarshal([]byte(firstRaw), &first); err != nil {
 		t.Fatalf("decode first output: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestOpenAIRunnerPreservesRawOutputAcrossToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second completion error = %v", err)
 	}
-	var second openAIAxiomOutput
+	var second openAIHeraldOutput
 	if err := json.Unmarshal([]byte(secondRaw), &second); err != nil {
 		t.Fatalf("decode second output: %v", err)
 	}

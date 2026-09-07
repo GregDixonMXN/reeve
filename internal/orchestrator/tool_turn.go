@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"axiom/internal/cognitive"
-	"axiom/pkg/models"
+	"herald/internal/cognitive"
+	"herald/pkg/models"
 )
 
 type toolTurnStatus uint8

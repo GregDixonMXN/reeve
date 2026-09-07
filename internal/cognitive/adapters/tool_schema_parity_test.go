@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"axiom/pkg/models"
+	"herald/pkg/models"
 )
 
 func TestProviderToolSchemaParity(t *testing.T) {

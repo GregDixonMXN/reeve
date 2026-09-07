@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/cognitive/adapters"
-	"axiom/internal/config"
-	"axiom/internal/memory"
-	"axiom/pkg/models"
+	"herald/internal/cognitive"
+	"herald/internal/cognitive/adapters"
+	"herald/internal/config"
+	"herald/internal/memory"
+	"herald/pkg/models"
 )
 
 func TestOpenAICompatibilityFallbackRetainsJSONRetry(t *testing.T) {

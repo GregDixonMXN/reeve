@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-const isolationTestRequestEnv = "AXIOM_ISOLATION_TEST_REQUEST"
+const isolationTestRequestEnv = "HERALD_ISOLATION_TEST_REQUEST"
 
 func TestMain(m *testing.M) {
 	if IsSandboxHelperInvocation(os.Args) {

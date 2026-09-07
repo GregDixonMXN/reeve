@@ -85,7 +85,7 @@ func TestLoadRequiredRejectsMissingBaseConfig(t *testing.T) {
 func TestLoadRequiredRejectsUnreadableBaseConfig(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "axiom.toml")
+	path := filepath.Join(t.TempDir(), "herald.toml")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestLoadAllowsMissingImplicitBaseConfig(t *testing.T) {
 
 func TestResolveRelativePathsUsesConfigDirectory(t *testing.T) {
 	t.Parallel()
-	configPath := filepath.Join(t.TempDir(), "config", "axiom.toml")
+	configPath := filepath.Join(t.TempDir(), "config", "herald.toml")
 	cfg := Defaults()
 	cfg.Database.Path = "data/memory.db"
 	cfg.Tools.PythonPath = ".venv/bin/python"
@@ -136,10 +136,10 @@ func TestResolveRelativePathsExpandsTrustedPythonHome(t *testing.T) {
 	}
 
 	cfg := Defaults()
-	cfg.Tools.PythonPath = "~/.axiom/venv/bin/python"
-	resolveRelativePaths(cfg, filepath.Join(t.TempDir(), "axiom.toml"))
+	cfg.Tools.PythonPath = "~/.herald/venv/bin/python"
+	resolveRelativePaths(cfg, filepath.Join(t.TempDir(), "herald.toml"))
 
-	want := filepath.Join(home, ".axiom", "venv", "bin", "python")
+	want := filepath.Join(home, ".herald", "venv", "bin", "python")
 	if cfg.Tools.PythonPath != want {
 		t.Fatalf("python path = %q, want %q", cfg.Tools.PythonPath, want)
 	}
@@ -240,22 +240,22 @@ func TestValidateNetworkPolicyIgnoresDisabledLocalEndpoints(t *testing.T) {
 
 func TestOpenAIEnvironmentOverridePrecedence(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "standard")
-	t.Setenv("AXIOM_OPENAI_API_KEY", "axiom-specific")
+	t.Setenv("HERALD_OPENAI_API_KEY", "herald-specific")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Cloud.OpenAIKey != "axiom-specific" {
-		t.Fatalf("OpenAIKey = %q, want Axiom-specific override", cfg.Cloud.OpenAIKey)
+	if cfg.Cloud.OpenAIKey != "herald-specific" {
+		t.Fatalf("OpenAIKey = %q, want Herald-specific override", cfg.Cloud.OpenAIKey)
 	}
 }
 
 func TestOpenAIEnvironmentOverridesConfigValue(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "from-environment")
-	t.Setenv("AXIOM_OPENAI_API_KEY", "")
+	t.Setenv("HERALD_OPENAI_API_KEY", "")
 
-	path := filepath.Join(t.TempDir(), "axiom.toml")
+	path := filepath.Join(t.TempDir(), "herald.toml")
 	if err := os.WriteFile(path, []byte("[cloud]\nopenai_key = \"from-config\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestOpenAIEnvironmentOverridesConfigValue(t *testing.T) {
 
 func TestOpenAIWhitespaceKeyIsNotConfigured(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "   ")
-	t.Setenv("AXIOM_OPENAI_API_KEY", "")
+	t.Setenv("HERALD_OPENAI_API_KEY", "")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
 	if err != nil {
@@ -284,7 +284,7 @@ func TestOpenAIWhitespaceKeyIsNotConfigured(t *testing.T) {
 func TestLoadRejectsInvalidOpenAIReasoningEffort(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "axiom.toml")
+	path := filepath.Join(t.TempDir(), "herald.toml")
 	if err := os.WriteFile(path, []byte("[cloud]\nreasoning_effort = \"extreme\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"axiom/internal/config"
-	"axiom/pkg/models"
+	"herald/internal/config"
+	"herald/pkg/models"
 )
 
 func TestNetworkPolicyFailsClosedWhenGuardrailsDisabled(t *testing.T) {

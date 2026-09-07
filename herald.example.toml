@@ -1,9 +1,9 @@
-# ─── Axiom Configuration (example) ───────────────────────────────────────────
+# ─── Herald Configuration (example) ───────────────────────────────────────────
 
 log_level = "info"
 
 [database]
-path       = "axiom_memory.db"
+path       = "herald_memory.db"
 # Encryption is not available in this build; setting this true fails closed.
 encrypted  = false
 passphrase = ""
@@ -11,7 +11,7 @@ vec_dim    = 768
 
 [model]
 # Local Qwen handles private/offline work. Hybrid mode automatically routes
-# complex turns to OpenAI when AXIOM_OPENAI_API_KEY is configured.
+# complex turns to OpenAI when HERALD_OPENAI_API_KEY is configured.
 enabled          = true
 model_path       = ""
 context_size     = 65536
@@ -43,7 +43,7 @@ url      = "http://localhost:11434"
 dim      = 768
 
 [cloud]
-# Keep the key in AXIOM_OPENAI_API_KEY or OPENAI_API_KEY, never this file.
+# Keep the key in HERALD_OPENAI_API_KEY or OPENAI_API_KEY, never this file.
 provider         = "openai"
 openai_key       = ""
 openai_model     = "gpt-5.6-sol"
@@ -58,7 +58,7 @@ timeout_sec     = 300
 [tools]
 mojo_path        = ""
 mojo_kernels_dir = "mojo/kernels"
-python_path      = "~/.axiom/venv/bin/python"
+python_path      = "~/.herald/venv/bin/python"
 wolfram_app_id   = ""
 allowed_dirs = ["~/projects", "~/Documents", "~/Desktop"]
 max_exec_time_sec = 300

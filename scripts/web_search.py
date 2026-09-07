@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Axiom Web Search Tool (Tool A: "The Eyes — Search")
+Herald Web Search Tool (Tool A: "The Eyes — Search")
 ════════════════════════════════════════════════════
 Searches DuckDuckGo and returns clean JSON results.
 Called by the Go tool registry via stdin JSON.

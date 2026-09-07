@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"axiom/internal/config"
-	"axiom/pkg/models"
+	"herald/internal/config"
+	"herald/pkg/models"
 )
 
 type Guard struct {

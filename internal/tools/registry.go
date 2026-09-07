@@ -15,10 +15,10 @@ import (
 	"time"
 	"unicode"
 
-	"axiom/internal/config"
-	"axiom/internal/guardrail"
-	"axiom/pkg/models"
-	axiomscripts "axiom/scripts"
+	"herald/internal/config"
+	"herald/internal/guardrail"
+	"herald/pkg/models"
+	heraldscripts "herald/scripts"
 )
 
 type ToolFunc func(ctx context.Context, args map[string]interface{}) (string, error)
@@ -868,7 +868,7 @@ func (r *Registry) executeDynamic(ctx context.Context, tool dynamicTool, args ma
 			if resolveErr != nil {
 				return "", resolveErr
 			}
-			source, readErr := axiomscripts.ToolFiles.ReadFile(filepath.Base(tool.script))
+			source, readErr := heraldscripts.ToolFiles.ReadFile(filepath.Base(tool.script))
 			if readErr != nil {
 				source, readErr = os.ReadFile(tool.script)
 				if readErr != nil {
@@ -906,7 +906,7 @@ func (r *Registry) executeDynamic(ctx context.Context, tool dynamicTool, args ma
 // embedded helper and rejects any interpreter or virtual environment that
 // overlaps a writable workspace. Python's isolated mode still loads a venv's
 // site-packages (including .pth and sitecustomize), so a workspace-owned venv
-// would let repository content execute before Axiom's trusted helper source.
+// would let repository content execute before Herald's trusted helper source.
 func (r *Registry) resolveTrustedPythonRuntime(binary, workingDir string) (string, error) {
 	binary = strings.TrimSpace(binary)
 	if strings.HasPrefix(binary, "~/") {

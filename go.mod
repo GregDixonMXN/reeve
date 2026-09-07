@@ -1,4 +1,4 @@
-module axiom
+module herald
 
 go 1.24.0
 

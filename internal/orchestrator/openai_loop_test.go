@@ -12,12 +12,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/cognitive/adapters"
-	"axiom/internal/config"
-	"axiom/internal/guardrail"
-	"axiom/internal/tools"
-	"axiom/pkg/logger"
+	"herald/internal/cognitive"
+	"herald/internal/cognitive/adapters"
+	"herald/internal/config"
+	"herald/internal/guardrail"
+	"herald/internal/tools"
+	"herald/pkg/logger"
 )
 
 func TestAgentLoopPreservesOpenAICallIDReplay(t *testing.T) {

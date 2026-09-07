@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"axiom/pkg/models"
+	"herald/pkg/models"
 )
 
 func TestOllamaRequestsSeparateContextAndOutputLimits(t *testing.T) {

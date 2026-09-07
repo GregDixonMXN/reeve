@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/cognitive/adapters"
-	"axiom/internal/config"
-	"axiom/internal/guardrail"
-	"axiom/internal/memory"
-	"axiom/internal/orchestrator"
-	"axiom/internal/tools"
-	"axiom/pkg/logger"
+	"herald/internal/cognitive"
+	"herald/internal/cognitive/adapters"
+	"herald/internal/config"
+	"herald/internal/guardrail"
+	"herald/internal/memory"
+	"herald/internal/orchestrator"
+	"herald/internal/tools"
+	"herald/pkg/logger"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -50,7 +50,7 @@ var assets embed.FS
 func main() {
 	if tools.IsSandboxHelperInvocation(os.Args) {
 		if err := tools.RunSandboxHelper(os.Args); err != nil {
-			fmt.Fprintf(os.Stderr, "axiom sandbox helper: %v\n", err)
+			fmt.Fprintf(os.Stderr, "herald sandbox helper: %v\n", err)
 			os.Exit(125)
 		}
 		return
@@ -65,11 +65,11 @@ func main() {
 		cfg, err = config.Load(configPath)
 	}
 	if err != nil {
-		log.Fatalf("[AXIOM] Config error: %v", err)
+		log.Fatalf("[HERALD] Config error: %v", err)
 	}
 
 	appLog := logger.New(cfg.LogLevel)
-	appLog.Info("Axiom v1.0 — AI Agent Runtime")
+	appLog.Info("Herald v1.0 — AI Agent Runtime")
 	appLog.Info("Config: %s", configPath)
 
 	// ── Embedding ───────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ func main() {
 	// ── Memory ──────────────────────────────────────────────────────────
 	mem, err := memory.NewStore(cfg.Database, embedder)
 	if err != nil {
-		log.Fatalf("[AXIOM] Memory: %v", err)
+		log.Fatalf("[HERALD] Memory: %v", err)
 	}
 	defer mem.Close()
 
@@ -193,7 +193,7 @@ func main() {
 				})
 				appLog.Info("Cloud runner: OpenAI (%s, reasoning=%s) — cloud mode available", cfg.Cloud.OpenAIModel, cfg.Cloud.ReasoningEffort)
 			} else {
-				appLog.Warn("OpenAI cloud mode is not configured — set AXIOM_OPENAI_API_KEY or OPENAI_API_KEY")
+				appLog.Warn("OpenAI cloud mode is not configured — set HERALD_OPENAI_API_KEY or OPENAI_API_KEY")
 			}
 		case "anthropic":
 			cloudModel = cfg.Cloud.AnthropicModel
@@ -206,7 +206,7 @@ func main() {
 				})
 				appLog.Info("Cloud runner: Anthropic (%s) — cloud mode available", cfg.Cloud.AnthropicModel)
 			} else {
-				appLog.Warn("Anthropic cloud mode is not configured — set AXIOM_ANTHROPIC_KEY or ANTHROPIC_API_KEY")
+				appLog.Warn("Anthropic cloud mode is not configured — set HERALD_ANTHROPIC_KEY or ANTHROPIC_API_KEY")
 			}
 		}
 	}
@@ -337,7 +337,7 @@ func main() {
 	})
 
 	err = wails.Run(&options.App{
-		Title:  "Axiom AI Agent",
+		Title:  "Herald AI Agent",
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
@@ -351,24 +351,24 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("[AXIOM] %v", err)
+		log.Fatalf("[HERALD] %v", err)
 	}
 }
 
 func findConfigPath() (string, bool) {
-	if explicit := strings.TrimSpace(os.Getenv("AXIOM_CONFIG")); explicit != "" {
+	if explicit := strings.TrimSpace(os.Getenv("HERALD_CONFIG")); explicit != "" {
 		return explicit, true
 	}
-	candidates := []string{"axiom.toml"}
+	candidates := []string{"herald.toml"}
 	if configDir, err := os.UserConfigDir(); err == nil {
-		candidates = append(candidates, filepath.Join(configDir, "axiom", "axiom.toml"))
+		candidates = append(candidates, filepath.Join(configDir, "herald", "herald.toml"))
 	}
 	if executable, err := os.Executable(); err == nil {
 		dir := filepath.Dir(executable)
 		candidates = append(candidates,
-			filepath.Join(dir, "axiom.toml"),
-			filepath.Join(filepath.Dir(dir), "axiom.toml"),
-			filepath.Join(filepath.Dir(filepath.Dir(dir)), "axiom.toml"),
+			filepath.Join(dir, "herald.toml"),
+			filepath.Join(filepath.Dir(dir), "herald.toml"),
+			filepath.Join(filepath.Dir(filepath.Dir(dir)), "herald.toml"),
 		)
 	}
 	seen := make(map[string]struct{}, len(candidates))
@@ -385,5 +385,5 @@ func findConfigPath() (string, bool) {
 			return absolute, false
 		}
 	}
-	return "axiom.toml", false
+	return "herald.toml", false
 }

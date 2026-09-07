@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"axiom/pkg/models"
+	"herald/pkg/models"
 )
 
 // TokenCallback is called for each streamed token.

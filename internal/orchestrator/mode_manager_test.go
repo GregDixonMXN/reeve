@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/config"
+	"herald/internal/cognitive"
+	"herald/internal/config"
 )
 
 type modeTestRunner struct{}

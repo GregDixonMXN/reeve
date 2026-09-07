@@ -87,7 +87,7 @@ const Sidebar: Component<Props> = (props) => {
         {/* Header */}
         <div class="flex items-center justify-between px-4 py-3 border-b border-[#2a2a35]">
           <span class="text-xs font-bold tracking-widest uppercase text-indigo-400">
-            ⚡ Axiom
+            ⚡ Herald
           </span>
           <button
             class="text-gray-500 hover:text-white text-lg leading-none transition-colors"

@@ -10,10 +10,10 @@ import (
 	"sync"
 	"testing"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/cognitive/adapters"
-	"axiom/internal/config"
-	"axiom/pkg/models"
+	"herald/internal/cognitive"
+	"herald/internal/cognitive/adapters"
+	"herald/internal/config"
+	"herald/pkg/models"
 )
 
 type hybridLocalFailRunner struct{}
@@ -49,7 +49,7 @@ func TestHybridOpenAIToolLoopPreservesResponsesCallLinkage(t *testing.T) {
 				"status":"completed",
 				"output":[
 					{"type":"reasoning","id":"rs_1","encrypted_content":"opaque-state","summary":[]},
-					{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"/tmp/axiom.txt\"}"}
+					{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"/tmp/herald.txt\"}"}
 				]
 			}`))
 			return

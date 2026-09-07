@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"axiom/pkg/models"
+	"herald/pkg/models"
 )
 
 func TestRemoteRunnerOllamaChatWithoutToolsUsesThinkingAndConfiguredOptions(t *testing.T) {
@@ -68,7 +68,7 @@ func TestRemoteRunnerOllamaChatWithoutToolsUsesThinkingAndConfiguredOptions(t *t
 
 	var output models.LLMResponse
 	if err := json.Unmarshal([]byte(raw), &output); err != nil {
-		t.Fatalf("decode Axiom output: %v", err)
+		t.Fatalf("decode Herald output: %v", err)
 	}
 	if output.Reasoning != "native thought" || output.Content != "Hello" || output.ToolCall != nil {
 		t.Fatalf("output = %#v", output)

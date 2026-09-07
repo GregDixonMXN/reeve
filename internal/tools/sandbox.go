@@ -196,7 +196,7 @@ func (s *Sandbox) Execute(ctx context.Context, command, dir string) *ExecuteResu
 }
 
 // ExecuteArgs runs an already-tokenized trusted command. It is used for
-// embedded Axiom helper scripts so source code never needs shell quoting.
+// embedded Herald helper scripts so source code never needs shell quoting.
 func (s *Sandbox) ExecuteArgs(ctx context.Context, parts []string, dir string, stdin io.Reader) *ExecuteResult {
 	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
 		return &ExecuteResult{Error: "Empty command"}
@@ -211,7 +211,7 @@ func (s *Sandbox) HasOSIsolation() bool {
 func (s *Sandbox) executeParts(ctx context.Context, policyCommand string, parts []string, dir string, stdin io.Reader, isolationRoots []string) *ExecuteResult {
 	// ── Layer 0: Sandbox enabled check ──────────────────────────────────
 	if !s.cfg.Enabled {
-		return &ExecuteResult{Error: "Code execution is disabled. Set security.sandbox.enabled = true in axiom.toml"}
+		return &ExecuteResult{Error: "Code execution is disabled. Set security.sandbox.enabled = true in herald.toml"}
 	}
 
 	// ── Layer 1: Directory Jail ─────────────────────────────────────────
@@ -277,7 +277,7 @@ func (s *Sandbox) executeParts(ctx context.Context, policyCommand string, parts 
 		}
 		// Give isolated tools an ephemeral home/cache. Landlock prevents the
 		// command from renaming its entry in /tmp, making cleanup safe.
-		tempHome, err := os.MkdirTemp("", "axiom-sandbox-")
+		tempHome, err := os.MkdirTemp("", "herald-sandbox-")
 		if err != nil {
 			return &ExecuteResult{Error: fmt.Sprintf("Create isolated home: %v", err)}
 		}

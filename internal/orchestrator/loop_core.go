@@ -3,9 +3,9 @@ package orchestrator
 import (
 	"context"
 
-	"axiom/internal/cognitive"
-	"axiom/internal/memory"
-	"axiom/pkg/models"
+	"herald/internal/cognitive"
+	"herald/internal/memory"
+	"herald/pkg/models"
 )
 
 type toolLoopPolicy struct {
