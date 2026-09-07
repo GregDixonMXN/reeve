@@ -67,6 +67,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("[REEVE] Config error: %v", err)
 	}
+	for _, notice := range legacyAxiomProbe() {
+		fmt.Fprintf(os.Stderr, "[REEVE] %s\n", notice)
+	}
 
 	appLog := logger.New(cfg.LogLevel)
 	appLog.Info("Reeve v1.0 — AI Agent Runtime")
@@ -353,6 +356,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("[REEVE] %v", err)
 	}
+}
+
+// legacyAxiomProbe reports pre-rename state files whose Reeve equivalents
+// are absent, so upgraders learn their settings/memory are not loading.
+// See README "Migrating from Axiom".
+func legacyAxiomProbe() []string {
+	var notices []string
+	pairs := [][2]string{
+		{"axiom.toml", "reeve.toml"},
+		{"axiom.local.toml", "reeve.local.toml"},
+		{"axiom_memory.db", "reeve_memory.db"},
+	}
+	for _, p := range pairs {
+		if _, err := os.Stat(p[0]); err != nil {
+			continue
+		}
+		if _, err := os.Stat(p[1]); err == nil {
+			continue
+		}
+		notices = append(notices, fmt.Sprintf("found legacy %s without %s — run: mv %s %s", p[0], p[1], p[0], p[1]))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		oldData := filepath.Join(home, ".axiom")
+		if st, err := os.Stat(oldData); err == nil && st.IsDir() {
+			if _, err := os.Stat(filepath.Join(home, ".reeve")); os.IsNotExist(err) {
+				notices = append(notices, "found legacy ~/.axiom without ~/.reeve — run: mv ~/.axiom ~/.reeve")
+			}
+		}
+	}
+	return notices
 }
 
 func findConfigPath() (string, bool) {

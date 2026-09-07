@@ -1,8 +1,8 @@
-# Reeve AI Agent
-
-**Hybrid desktop agent runtime with a private Qwen 3.6 brain, OpenAI cloud routing, persistent conversations, and guarded tool execution.**
+# Reeve
 
 Reeve is a real agent runtime, not just a chat wrapper. The core job is to assemble context, choose tools, execute safely, recover from errors, and persist useful memory.
+
+**Hybrid desktop agent runtime with a private Qwen 3.6 brain, OpenAI cloud routing, persistent conversations, and guarded tool execution.**
 
 ## Current state
 
@@ -72,9 +72,13 @@ ollama pull qwen3.6:27b-mtp-q4_K_M
 # 5. Configure OpenAI for hybrid/cloud mode (optional)
 export REEVE_OPENAI_API_KEY="your-platform-api-key"
 
-# 6. Run desktop app
-make dev
+# 6. Run desktop app (recorded — Reeve's own sessions go under annalist)
+annalist run -- make dev
 ```
+Record work with [annalist](https://github.com/GregDixonMXN/annalist), the
+local-first flight recorder: every build, test, and run lands on a branch
+(`annalist run --branch reeve-phase -- make dev`) for later inspection,
+diff, rewind, or export.
 
 The default profile starts in `hybrid` mode with
 `qwen3.6:27b-mtp-q4_K_M` as the local agent and `gpt-5.6-sol` through
@@ -115,7 +119,21 @@ Supported secret env vars:
 
 The Reeve-specific OpenAI variable wins when both OpenAI variables are set.
 Never commit a key to `reeve.toml`, expose it to the frontend, or paste it into
-chat. The UI reports only whether a credential was resolved.
+chat. The UI reports only whether a credential was resolved. Keys also work in
+the adjacent `reeve.local.toml` (untracked — safe for local secrets), which the
+loader reads after the base config.
+
+### Migrating from Axiom
+
+Reeve was renamed from Axiom. A fresh Reeve starts empty — if you ran Axiom,
+move your state over (startup prints this notice while legacy paths exist):
+
+```bash
+mv axiom.toml reeve.toml
+mv axiom.local.toml reeve.local.toml
+mv ~/.axiom ~/.reeve
+mv axiom_memory.db reeve_memory.db   # or point [database] path at the old file
+```
 
 The hybrid settings are:
 
