@@ -1,5 +1,5 @@
 """
-Herald Embedding Kernel (Phase 4 Preview)
+Reeve Embedding Kernel (Phase 4 Preview)
 ═════════════════════════════════════════
 Fast local text → vector embedding without network calls.
 
@@ -178,7 +178,7 @@ def main():
     var op = String(args[1])
 
     if op == "info":
-        print("Herald Hash Embedder v1.0")
+        print("Reeve Hash Embedder v1.0")
         print("SIMD width (float32):", SIMD_WIDTH)
         print("Method: character n-gram hashing + positional encoding")
         print("Use for: fast local fallback when Ollama is unavailable")

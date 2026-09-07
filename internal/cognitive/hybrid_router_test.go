@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"herald/internal/config"
-	"herald/pkg/models"
+	"reeve/internal/config"
+	"reeve/pkg/models"
 )
 
 type routingRecorder struct {
@@ -76,7 +76,7 @@ func (*retryRoutingRecorder) Unload() error { return nil }
 func TestClassifyByHeuristicRoutesConciseCloudIntent(t *testing.T) {
 	t.Parallel()
 
-	if got := classifyByHeuristic("analyze the herald project"); got != RouteCloud {
+	if got := classifyByHeuristic("analyze the reeve project"); got != RouteCloud {
 		t.Fatalf("route = %s, want CLOUD", got)
 	}
 }
@@ -107,7 +107,7 @@ func TestHybridRunnerRoutesOnLatestUserIntent(t *testing.T) {
 		{Name: "read_file", Description: "read"},
 	}
 	messages := []models.Message{
-		{Role: models.RoleUser, Content: "analyze the herald project"},
+		{Role: models.RoleUser, Content: "analyze the reeve project"},
 		{Role: models.RoleAssistant, Content: "calling a tool"},
 		{Role: models.RoleTool, Content: "status: complete"},
 	}
@@ -220,7 +220,7 @@ func TestHybridNativeJSONRetryKeepsCloudRouteAndFilteredTools(t *testing.T) {
 	response, err := engine.Generate(context.Background(), Request{
 		Messages: []models.Message{{
 			Role:    models.RoleUser,
-			Content: "analyze the herald project",
+			Content: "analyze the reeve project",
 		}},
 		Tools: tools,
 	})
@@ -312,9 +312,9 @@ func TestLatestUserIntentFromPromptIgnoresSystemAndFormatRetry(t *testing.T) {
 		t.Fatalf("latest intent = %q, want %q", got, "status please")
 	}
 
-	retryPrompt := "<|user|>\nanalyze the herald project\n<|end|>\n" +
+	retryPrompt := "<|user|>\nanalyze the reeve project\n<|end|>\n" +
 		"<|user|>\nYour last response was not valid JSON. Respond again.\n<|end|>\n"
-	if got := latestUserIntentFromPrompt(retryPrompt); got != "analyze the herald project" {
+	if got := latestUserIntentFromPrompt(retryPrompt); got != "analyze the reeve project" {
 		t.Fatalf("retry intent = %q, want original request", got)
 	}
 }

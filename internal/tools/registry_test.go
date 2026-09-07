@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"herald/internal/config"
-	"herald/internal/guardrail"
-	"herald/pkg/models"
+	"reeve/internal/config"
+	"reeve/internal/guardrail"
+	"reeve/pkg/models"
 )
 
 type registryRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -277,7 +277,7 @@ func TestSearchMemoryCapsLimitAndOutput(t *testing.T) {
 	r := NewRegistry(config.ToolsConfig{MaxExecTimeSec: 5, MaxOutputBytes: 80}, nil, nil)
 	r.SetMemory(recorder)
 	result, err := r.searchMemory(context.Background(), map[string]interface{}{
-		"query": "herald",
+		"query": "reeve",
 		"limit": float64(10_000),
 	})
 	if err != nil {

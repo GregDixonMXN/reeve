@@ -29,7 +29,7 @@ func NewMojoBridge(mojoPath, kernelsDir string) (*MojoBridge, error) {
 		kernelsDir = "mojo/kernels"
 	}
 
-	tempDir, err := os.MkdirTemp("", "herald-mojo-*")
+	tempDir, err := os.MkdirTemp("", "reeve-mojo-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}

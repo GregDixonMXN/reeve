@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"herald/internal/cognitive"
-	"herald/internal/cognitive/adapters"
-	"herald/internal/config"
-	"herald/internal/memory"
-	"herald/pkg/models"
+	"reeve/internal/cognitive"
+	"reeve/internal/cognitive/adapters"
+	"reeve/internal/config"
+	"reeve/internal/memory"
+	"reeve/pkg/models"
 )
 
 func TestOpenAICompatibilityFallbackRetainsJSONRetry(t *testing.T) {

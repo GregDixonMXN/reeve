@@ -118,7 +118,7 @@ func Load(path string) (*AppConfig, error) {
 }
 
 // LoadRequired loads a configuration whose base file must exist and be
-// readable. It is used for explicit HERALD_CONFIG selections so a typo or
+// readable. It is used for explicit REEVE_CONFIG selections so a typo or
 // permissions problem cannot silently fall back to defaults.
 func LoadRequired(path string) (*AppConfig, error) {
 	return load(path, true)
@@ -254,24 +254,24 @@ func validateCloudConfig(cfg *AppConfig) error {
 }
 
 func applyEnvOverrides(cfg *AppConfig) {
-	if v := strings.TrimSpace(os.Getenv("HERALD_OPENAI_API_KEY")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("REEVE_OPENAI_API_KEY")); v != "" {
 		cfg.Cloud.OpenAIKey = v
 	} else if v := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); v != "" {
 		cfg.Cloud.OpenAIKey = v
 	}
-	if v := strings.TrimSpace(os.Getenv("HERALD_ANTHROPIC_KEY")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("REEVE_ANTHROPIC_KEY")); v != "" {
 		cfg.Cloud.AnthropicKey = v
 	} else if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); v != "" {
 		cfg.Cloud.AnthropicKey = v
 	}
-	if v := strings.TrimSpace(os.Getenv("HERALD_GEMINI_KEY")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("REEVE_GEMINI_KEY")); v != "" {
 		cfg.Cloud.GeminiKey = v
 	} else if v := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); v != "" {
 		cfg.Cloud.GeminiKey = v
 	} else if v := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")); v != "" {
 		cfg.Cloud.GeminiKey = v
 	}
-	if v := os.Getenv("HERALD_WOLFRAM_APP_ID"); v != "" {
+	if v := os.Getenv("REEVE_WOLFRAM_APP_ID"); v != "" {
 		cfg.Tools.WolframAppID = v
 	}
 	if v := os.Getenv("WOLFRAM_APP_ID"); v != "" && cfg.Tools.WolframAppID == "" {
@@ -348,7 +348,7 @@ func Defaults() *AppConfig {
 	return &AppConfig{
 		LogLevel: "info",
 		Database: DatabaseConfig{
-			Path:   "herald_memory.db",
+			Path:   "reeve_memory.db",
 			VecDim: 768,
 		},
 		Model: ModelConfig{
@@ -388,7 +388,7 @@ func Defaults() *AppConfig {
 			TimeoutSec:      120,
 		},
 		Tools: ToolsConfig{
-			PythonPath:     "~/.herald/venv/bin/python",
+			PythonPath:     "~/.reeve/venv/bin/python",
 			MojoKernelsDir: "mojo/kernels",
 			MaxExecTimeSec: 30,
 			MaxFileSize:    10 * 1024 * 1024,

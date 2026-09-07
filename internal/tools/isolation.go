@@ -8,7 +8,7 @@ import (
 	"os/exec"
 )
 
-const sandboxHelperArgument = "__herald_sandbox_exec"
+const sandboxHelperArgument = "__reeve_sandbox_exec"
 
 const (
 	defaultSandboxCPUTimeSec     = 60
@@ -34,7 +34,7 @@ type isolationRequest struct {
 	ResourceLimits isolationResourceLimits `json:"resource_limits"`
 }
 
-// IsolationSupported reports whether this host can enforce Herald's filesystem
+// IsolationSupported reports whether this host can enforce Reeve's filesystem
 // boundary and, when requested, its no-network policy. Callers should fail
 // closed when this returns an error.
 func IsolationSupported(allowNetwork bool) error {
@@ -42,14 +42,14 @@ func IsolationSupported(allowNetwork bool) error {
 }
 
 // IsolationHelperPath returns a stable reference to the currently running
-// Herald executable. The path must not be replaceable from a writable workspace
+// Reeve executable. The path must not be replaceable from a writable workspace
 // before the helper installs Landlock and seccomp.
 func IsolationHelperPath() (string, error) {
 	return isolationHelperPath()
 }
 
 // IsSandboxHelperInvocation reports whether the current process was started as
-// Herald's restricted exec helper. main calls this before initializing Wails.
+// Reeve's restricted exec helper. main calls this before initializing Wails.
 func IsSandboxHelperInvocation(args []string) bool {
 	return len(args) == 3 && args[1] == sandboxHelperArgument
 }

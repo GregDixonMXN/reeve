@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Herald Wolfram|Alpha LLM Bridge
+Reeve Wolfram|Alpha LLM Bridge
 
 Input (stdin JSON): {"query": "integral of x^2 from 0 to 1"}
 Output (stdout):    Plain text result optimized for LLMs

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 func TestProviderToolSchemaParity(t *testing.T) {

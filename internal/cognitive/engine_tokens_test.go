@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"herald/internal/config"
-	"herald/internal/memory"
-	"herald/pkg/models"
+	"reeve/internal/config"
+	"reeve/internal/memory"
+	"reeve/pkg/models"
 )
 
 type tokenLimitRecorder struct {

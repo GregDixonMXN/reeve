@@ -18,9 +18,9 @@ __pycache__/
 *.log
 
 # Config secrets / overrides
-herald.toml
-herald.local.toml
-HERALD.md
+reeve.toml
+reeve.local.toml
+REEVE.md
 .env
 .env.*
 !.env.example

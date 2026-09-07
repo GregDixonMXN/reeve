@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"herald/internal/cognitive"
-	"herald/internal/cognitive/adapters"
-	"herald/internal/config"
-	"herald/internal/guardrail"
-	"herald/internal/memory"
-	"herald/internal/tools"
-	"herald/pkg/models"
+	"reeve/internal/cognitive"
+	"reeve/internal/cognitive/adapters"
+	"reeve/internal/config"
+	"reeve/internal/guardrail"
+	"reeve/internal/memory"
+	"reeve/internal/tools"
+	"reeve/pkg/models"
 )
 
 type liveContextMemorySearch struct{}
@@ -31,15 +31,15 @@ func (liveContextMemorySearch) Search(
 // executing the returned tool call. It is opt-in because it requires the
 // dedicated local Ollama service and real model.
 func TestLiveOllamaLargeCodingTurnFitsContextAndProducesAction(t *testing.T) {
-	if os.Getenv("HERALD_OLLAMA_LIVE") != "1" {
-		t.Skip("set HERALD_OLLAMA_LIVE=1 to run against the configured Ollama service")
+	if os.Getenv("REEVE_OLLAMA_LIVE") != "1" {
+		t.Skip("set REEVE_OLLAMA_LIVE=1 to run against the configured Ollama service")
 	}
 
 	projectRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("resolve project root: %v", err)
 	}
-	cfg, err := config.Load(filepath.Join(projectRoot, "herald.toml"))
+	cfg, err := config.Load(filepath.Join(projectRoot, "reeve.toml"))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestLiveOllamaLargeCodingTurnFitsContextAndProducesAction(t *testing.T) {
 	messages := make([]models.Message, 0, 22)
 	messages = append(messages, models.Message{
 		Role:    models.RoleUser,
-		Content: "Earlier conversation anchor about Herald development.",
+		Content: "Earlier conversation anchor about Reeve development.",
 	})
 	for index := 0; index < 19; index++ {
 		role := models.RoleAssistant
@@ -90,14 +90,14 @@ func TestLiveOllamaLargeCodingTurnFitsContextAndProducesAction(t *testing.T) {
 				strings.Repeat("implementation detail ", 12),
 		})
 	}
-	const prompt = "ok create a folder on desktop called herald game and use pygame and python to write your version of the most complete steam ready game you can whatever genre you want to do"
+	const prompt = "ok create a folder on desktop called reeve game and use pygame and python to write your version of the most complete steam ready game you can whatever genre you want to do"
 	messages = append(messages, models.Message{
 		Role: models.RoleUser,
 		Content: prompt + `
 
 [TASK PLAN — EXECUTE THIS EXACTLY]
-Create /home/shki/Desktop/herald game as a polished original Pygame project.
-Start with /home/shki/Desktop/herald game/main.py, then add its supporting
+Create /home/shki/Desktop/reeve game as a polished original Pygame project.
+Start with /home/shki/Desktop/reeve game/main.py, then add its supporting
 modules, generated original assets, tests, README, requirements, packaging,
 and Steam release checklist. Run headless tests after every file exists.
 [END TASK PLAN]

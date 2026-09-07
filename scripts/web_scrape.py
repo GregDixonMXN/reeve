@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Herald Web Scraper Tool (Tool B: "The Eyes — Scrape")
+Reeve Web Scraper Tool (Tool B: "The Eyes — Scrape")
 ═════════════════════════════════════════════════════
 Downloads a public webpage and extracts clean article text.
 
@@ -265,7 +265,7 @@ def _request_once(target: ResolvedTarget) -> tuple[int, Mapping[str, str], bytes
                 request_target,
                 headers={
                     "Host": target.parsed.netloc,
-                    "User-Agent": "Herald-Web-Scraper/1.0",
+                    "User-Agent": "Reeve-Web-Scraper/1.0",
                     "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
                     "Accept-Encoding": "identity",
                     "Connection": "close",

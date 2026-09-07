@@ -1,4 +1,4 @@
-module herald
+module reeve
 
 go 1.24.0
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Herald Git Operations Tool
+Reeve Git Operations Tool
 ═════════════════════════
 Executes git commands in a project directory.
 Called by the Go tool registry via stdin JSON.

@@ -46,7 +46,7 @@ func TestSafeStreamEmitterStreamsPlainUserContent(t *testing.T) {
 	}
 }
 
-func TestNormalizeNativeContentProducesHeraldContract(t *testing.T) {
+func TestNormalizeNativeContentProducesReeveContract(t *testing.T) {
 	t.Parallel()
 
 	plain := normalizeNativeContent("Hello")

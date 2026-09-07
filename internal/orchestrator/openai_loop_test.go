@@ -12,12 +12,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"herald/internal/cognitive"
-	"herald/internal/cognitive/adapters"
-	"herald/internal/config"
-	"herald/internal/guardrail"
-	"herald/internal/tools"
-	"herald/pkg/logger"
+	"reeve/internal/cognitive"
+	"reeve/internal/cognitive/adapters"
+	"reeve/internal/config"
+	"reeve/internal/guardrail"
+	"reeve/internal/tools"
+	"reeve/pkg/logger"
 )
 
 func TestAgentLoopPreservesOpenAICallIDReplay(t *testing.T) {

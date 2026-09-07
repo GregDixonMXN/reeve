@@ -1,8 +1,8 @@
 package main
 
 import (
-	"herald/internal/orchestrator"
-	"herald/pkg/models"
+	"reeve/internal/orchestrator"
+	"reeve/pkg/models"
 	"context"
 	"fmt"
 	"strings"
@@ -105,7 +105,7 @@ func (a *App) SetMode(mode string) error {
 	}
 
 	// Notify frontend of mode change
-	runtime.EventsEmit(a.ctx, "herald:mode_changed", mode)
+	runtime.EventsEmit(a.ctx, "reeve:mode_changed", mode)
 	return nil
 }
 
@@ -153,15 +153,15 @@ func (a *App) GetRuntimeStatus() map[string]interface{} {
 	setupHint := ""
 	if !ready && a.runtimeInfo.LocalEnabled && !a.runtimeInfo.LocalConfigured {
 		setupHint = fmt.Sprintf(
-			"Start Ollama and install %s, then restart Herald.",
+			"Start Ollama and install %s, then restart Reeve.",
 			a.runtimeInfo.LocalModel,
 		)
 	} else if !ready && !a.runtimeInfo.NetworkAllowed {
-		setupHint = "Cloud inference is disabled. Set security.allow_network = true, then restart Herald."
+		setupHint = "Cloud inference is disabled. Set security.allow_network = true, then restart Reeve."
 	} else if !ready && a.runtimeInfo.CloudProvider == "openai" && !a.runtimeInfo.CloudConfigured {
-		setupHint = "Set HERALD_OPENAI_API_KEY or OPENAI_API_KEY, then restart Herald."
+		setupHint = "Set REEVE_OPENAI_API_KEY or OPENAI_API_KEY, then restart Reeve."
 	} else if !ready {
-		setupHint = "Configure an available inference provider, then restart Herald."
+		setupHint = "Configure an available inference provider, then restart Reeve."
 	}
 
 	return map[string]interface{}{
@@ -226,7 +226,7 @@ func (a *App) GetConversation(id string) (map[string]interface{}, error) {
 //
 // Frontend usage:
 //
-//	window.runtime.EventsOn("herald:loop_event", (event) => { ... })
+//	window.runtime.EventsOn("reeve:loop_event", (event) => { ... })
 //	await window.go.main.App.RunAgentLoop(conversationID, runID, prompt)
 func (a *App) RunAgentLoop(conversationID, runID, message string) (map[string]interface{}, error) {
 	conversationID = strings.TrimSpace(conversationID)
@@ -241,7 +241,7 @@ func (a *App) RunAgentLoop(conversationID, runID, message string) (map[string]in
 	defer a.endRunScope(conversationID, runID)
 
 	resp, err := a.orch.AgentLoop(conversationID, runID, message, func(event orchestrator.LoopEvent) {
-		runtime.EventsEmit(a.ctx, "herald:loop_event", map[string]interface{}{
+		runtime.EventsEmit(a.ctx, "reeve:loop_event", map[string]interface{}{
 			"conversation_id": event.ConversationID,
 			"run_id":          event.RunID,
 			"kind":            string(event.Kind),
@@ -297,7 +297,7 @@ func (a *App) emitToken(token string) {
 		"token":           token,
 	}
 	a.streamMu.RUnlock()
-	runtime.EventsEmit(a.ctx, "herald:token", payload)
+	runtime.EventsEmit(a.ctx, "reeve:token", payload)
 }
 
 // ── Memory Management ───────────────────────────────────────────────────────

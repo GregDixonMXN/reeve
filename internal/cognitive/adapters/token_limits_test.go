@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 func TestOllamaRequestsSeparateContextAndOutputLimits(t *testing.T) {

@@ -1,5 +1,5 @@
 """
-Herald Neural Embedding Kernel (Mojo + GPU)
+Reeve Neural Embedding Kernel (Mojo + GPU)
 ═══════════════════════════════════════════
 Real neural-quality embeddings without Python, without network calls.
 
@@ -404,7 +404,7 @@ def main():
     var args = argv()
 
     if len(args) < 2:
-        print("Herald Neural Embedder v2.0")
+        print("Reeve Neural Embedder v2.0")
         print("")
         print("Usage:")
         print("  mojo run neural_embed.mojo embed <text> <dim> <output.bin>")
@@ -416,7 +416,7 @@ def main():
     var op = String(args[1])
 
     if op == "info":
-        print("Herald Neural Embedder v2.0")
+        print("Reeve Neural Embedder v2.0")
         print("─────────────────────────────────")
         print("CPU SIMD width (float32):", FLOAT_SIMD_W)
         print("Architecture: MiniLM-L6-v2 equivalent")

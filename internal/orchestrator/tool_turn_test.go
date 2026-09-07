@@ -10,12 +10,12 @@ import (
 	"sync"
 	"testing"
 
-	"herald/internal/cognitive"
-	"herald/internal/config"
-	"herald/internal/guardrail"
-	"herald/internal/tools"
-	"herald/pkg/logger"
-	"herald/pkg/models"
+	"reeve/internal/cognitive"
+	"reeve/internal/config"
+	"reeve/internal/guardrail"
+	"reeve/internal/tools"
+	"reeve/pkg/logger"
+	"reeve/pkg/models"
 )
 
 type sequenceRunner struct {

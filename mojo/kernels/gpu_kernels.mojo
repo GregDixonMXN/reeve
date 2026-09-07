@@ -1,5 +1,5 @@
 """
-Herald GPU Embedding Kernels
+Reeve GPU Embedding Kernels
 ════════════════════════════
 Real CUDA/ROCm GPU dispatch for the neural embedding forward pass.
 
@@ -540,7 +540,7 @@ def main():
     var args = argv()
 
     if len(args) < 2:
-        print("Herald GPU Embedding Kernels v1.0")
+        print("Reeve GPU Embedding Kernels v1.0")
         print("")
         print("Usage:")
         print("  mojo run gpu_kernels.mojo embed <text> <dim> <output.bin>")
@@ -551,7 +551,7 @@ def main():
     var op = String(args[1])
 
     if op == "info":
-        print("Herald GPU Embedding Kernels v1.0")
+        print("Reeve GPU Embedding Kernels v1.0")
         print("─────────────────────────────────────")
         print("CPU SIMD width (float32):", FLOAT_SIMD_W)
         print("Model: MiniLM-L6-v2 equivalent")

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"herald/internal/cognitive"
-	"herald/internal/config"
-	"herald/internal/guardrail"
-	"herald/internal/memory"
-	"herald/internal/tools"
-	"herald/pkg/logger"
+	"reeve/internal/cognitive"
+	"reeve/internal/config"
+	"reeve/internal/guardrail"
+	"reeve/internal/memory"
+	"reeve/internal/tools"
+	"reeve/pkg/logger"
 )
 
 type lifecycleRunner struct {
@@ -64,7 +64,7 @@ func TestConversationLifecycleRestoresTitleAndMessages(t *testing.T) {
 	orch.SetContext(context.Background())
 
 	var events []LoopEvent
-	response, err := orch.AgentLoop("conv-restore", "run-1", "Repair conversation restoration in Herald", func(event LoopEvent) {
+	response, err := orch.AgentLoop("conv-restore", "run-1", "Repair conversation restoration in Reeve", func(event LoopEvent) {
 		events = append(events, event)
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestConversationLifecycleRestoresTitleAndMessages(t *testing.T) {
 	if len(summaries) != 1 {
 		t.Fatalf("summaries len = %d, want 1", len(summaries))
 	}
-	if summaries[0].Title != "Repair conversation restoration in Herald" || summaries[0].MessageCount != 2 {
+	if summaries[0].Title != "Repair conversation restoration in Reeve" || summaries[0].MessageCount != 2 {
 		t.Fatalf("summary = %#v", summaries[0])
 	}
 	conversation, err := restarted.GetConversation("conv-restore")
@@ -107,7 +107,7 @@ func TestConversationLifecycleRestoresTitleAndMessages(t *testing.T) {
 	if conversation.Title != summaries[0].Title || len(conversation.Messages) != 2 {
 		t.Fatalf("conversation = %#v", conversation)
 	}
-	if conversation.Messages[0].Content != "Repair conversation restoration in Herald" || conversation.Messages[1].Content != "Lifecycle repaired" {
+	if conversation.Messages[0].Content != "Repair conversation restoration in Reeve" || conversation.Messages[1].Content != "Lifecycle repaired" {
 		t.Fatalf("messages = %#v", conversation.Messages)
 	}
 }
@@ -256,7 +256,7 @@ func TestWipeCancelsRunAndCannotResurrectConversation(t *testing.T) {
 }
 
 func TestDeriveConversationTitle(t *testing.T) {
-	if got := deriveConversationTitle("  Analyze   the Herald project\ncarefully  "); got != "Analyze the Herald project carefully" {
+	if got := deriveConversationTitle("  Analyze   the Reeve project\ncarefully  "); got != "Analyze the Reeve project carefully" {
 		t.Fatalf("title = %q", got)
 	}
 	long := deriveConversationTitle("This is a deliberately long conversation prompt that should be shortened without producing an enormous sidebar title")

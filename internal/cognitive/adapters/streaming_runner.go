@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 // TokenCallback is called for each streamed token.

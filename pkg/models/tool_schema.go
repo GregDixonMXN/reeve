@@ -119,7 +119,7 @@ func (d ToolDefinition) SchemaJSON() string {
 	return string(encoded)
 }
 
-// ParseLegacyArgsSchema converts Herald's historical
+// ParseLegacyArgsSchema converts Reeve's historical
 // {"name":"type (optional, description)"} representation into JSON Schema.
 // It also accepts an already-structured JSON Schema for compatibility with
 // callers that adopted the standard shape before ToolDefinition.Parameters.

@@ -13,7 +13,7 @@ import (
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
 
-	"herald/internal/config"
+	"reeve/internal/config"
 )
 
 // ─── Chunking Constants ──────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ type ConversationRecord struct {
 	LastActivity time.Time
 }
 
-// Store manages Herald's semantic memory:
+// Store manages Reeve's semantic memory:
 //   - Short-term: in-process conversation state (owned by Orchestrator)
 //   - Long-term: SQLite + sqlite-vec for vector KNN search
 type Store struct {

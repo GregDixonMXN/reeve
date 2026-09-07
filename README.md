@@ -1,12 +1,12 @@
-# Herald AI Agent
+# Reeve AI Agent
 
 **Hybrid desktop agent runtime with a private Qwen 3.6 brain, OpenAI cloud routing, persistent conversations, and guarded tool execution.**
 
-Herald is a real agent runtime, not just a chat wrapper. The core job is to assemble context, choose tools, execute safely, recover from errors, and persist useful memory.
+Reeve is a real agent runtime, not just a chat wrapper. The core job is to assemble context, choose tools, execute safely, recover from errors, and persist useful memory.
 
 ## Current state
 
-Herald currently provides:
+Reeve currently provides:
 - Wails desktop shell with SolidJS frontend
 - Go-based orchestration loop
 - Local Qwen 3.6 support through Ollama with native thinking and function tools
@@ -60,17 +60,17 @@ Orchestrator -> Cognitive Engine -> Local or Cloud Runner
 make setup
 
 # 2. Copy config
-cp herald.example.toml herald.toml
+cp reeve.example.toml reeve.toml
 
 # 3. Install the pinned local agent model
 ollama pull qwen3.6:27b-mtp-q4_K_M
 
 # 4. Put secrets in either:
 #    - environment variables (recommended), or
-#    - a protected config outside Herald's writable workspaces
+#    - a protected config outside Reeve's writable workspaces
 
 # 5. Configure OpenAI for hybrid/cloud mode (optional)
-export HERALD_OPENAI_API_KEY="your-platform-api-key"
+export REEVE_OPENAI_API_KEY="your-platform-api-key"
 
 # 6. Run desktop app
 make dev
@@ -84,37 +84,37 @@ selects a different 35B-A3B model. The default 65,536-token context is the
 practical agent/coding starting point for a 32 GiB machine.
 
 OpenAI API billing is separate from a ChatGPT subscription. Keep the platform
-key in the environment; Herald never sends it to the frontend.
+key in the environment; Reeve never sends it to the frontend.
 
 ## Configuration model
 
-Herald finds its base config from `HERALD_CONFIG`, the current directory,
-`$XDG_CONFIG_HOME/herald`, or the executable and its parent directories. An
-explicit `HERALD_CONFIG` must name a readable file; missing or unreadable paths
-fail startup instead of silently loading defaults. Herald then loads the adjacent
-`herald.local.toml` and finally applies environment overrides. Relative
+Reeve finds its base config from `REEVE_CONFIG`, the current directory,
+`$XDG_CONFIG_HOME/reeve`, or the executable and its parent directories. An
+explicit `REEVE_CONFIG` must name a readable file; missing or unreadable paths
+fail startup instead of silently loading defaults. Reeve then loads the adjacent
+`reeve.local.toml` and finally applies environment overrides. Relative
 database/runtime paths are resolved from the selected config file, and the
 registered Python tool scripts are embedded in the desktop binary.
 
-`make setup` installs the Python dependencies in `~/.herald/venv`, outside the
+`make setup` installs the Python dependencies in `~/.reeve/venv`, outside the
 workspace directories that agent tools may modify. Keep `tools.python_path`
-outside every configured writable/allowed directory; Herald rejects an embedded
+outside every configured writable/allowed directory; Reeve rejects an embedded
 tool runtime inside a writable workspace. Rerun `make setup` after upgrading
 from a checkout that used the former project-local `.venv`.
 
 Supported secret env vars:
-- `HERALD_OPENAI_API_KEY` (preferred for Herald)
+- `REEVE_OPENAI_API_KEY` (preferred for Reeve)
 - `OPENAI_API_KEY`
-- `HERALD_ANTHROPIC_KEY`
+- `REEVE_ANTHROPIC_KEY`
 - `ANTHROPIC_API_KEY`
-- `HERALD_GEMINI_KEY`
+- `REEVE_GEMINI_KEY`
 - `GEMINI_API_KEY`
 - `GOOGLE_API_KEY`
-- `HERALD_WOLFRAM_APP_ID`
+- `REEVE_WOLFRAM_APP_ID`
 - `WOLFRAM_APP_ID`
 
-The Herald-specific OpenAI variable wins when both OpenAI variables are set.
-Never commit a key to `herald.toml`, expose it to the frontend, or paste it into
+The Reeve-specific OpenAI variable wins when both OpenAI variables are set.
+Never commit a key to `reeve.toml`, expose it to the frontend, or paste it into
 chat. The UI reports only whether a credential was resolved.
 
 The hybrid settings are:
@@ -177,11 +177,11 @@ Recent hardening changes:
   reject configurations that could let project code poison that environment
 - restricted SQLite database/WAL files to the current user and made unsupported
   encryption settings fail closed instead of silently writing plaintext
-- enforced commit-safe local override config via `herald.local.toml`
+- enforced commit-safe local override config via `reeve.local.toml`
 
 The command boundary still does not provide a PID namespace, cgroup-wide
 CPU/memory accounting, or a container image. Linux rlimits are inherited by
-children but some limits are per process or per user, so Herald remains a
+children but some limits are per process or per user, so Reeve remains a
 developer-focused agent runtime rather than a multi-tenant execution service.
 
 ## Recommended workflow
@@ -195,11 +195,11 @@ developer-focused agent runtime rather than a multi-tenant execution service.
 ## Project layout
 
 ```text
-herald/
+reeve/
 ├── main.go
 ├── app.go
-├── herald.toml
-├── herald.example.toml
+├── reeve.toml
+├── reeve.example.toml
 ├── internal/
 │   ├── cognitive/
 │   ├── config/
@@ -246,4 +246,4 @@ the Linux binary but deliberately cannot upload or publish it.
 (Historical note: the 9 GB model blob was stripped from Git history and the
 legacy Anthropic/Google credentials scrubbed and confirmed dead before the
 repo went public. API keys live only in environment variables — never in
-`herald.toml`, which is git-ignored.)
+`reeve.toml`, which is git-ignored.)

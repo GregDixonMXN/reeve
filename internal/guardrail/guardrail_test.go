@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"herald/internal/config"
-	"herald/pkg/models"
+	"reeve/internal/config"
+	"reeve/pkg/models"
 )
 
 func TestNetworkPolicyFailsClosedWhenGuardrailsDisabled(t *testing.T) {

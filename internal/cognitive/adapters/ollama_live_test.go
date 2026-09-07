@@ -9,32 +9,32 @@ import (
 	"testing"
 	"time"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 // Run explicitly with:
 //
-//	HERALD_OLLAMA_LIVE=1 go test ./internal/cognitive/adapters -run TestLiveOllamaNativeToolLoop -v
-//	HERALD_OLLAMA_LIVE=1 HERALD_OLLAMA_MODEL=qwen3.5:9b-q4_K_M HERALD_OLLAMA_CONTEXT=16384 \
+//	REEVE_OLLAMA_LIVE=1 go test ./internal/cognitive/adapters -run TestLiveOllamaNativeToolLoop -v
+//	REEVE_OLLAMA_LIVE=1 REEVE_OLLAMA_MODEL=qwen3.5:9b-q4_K_M REEVE_OLLAMA_CONTEXT=16384 \
 //	  go test ./internal/cognitive/adapters -run TestLiveOllamaNativeToolLoop -v
 func TestLiveOllamaNativeToolLoop(t *testing.T) {
-	if os.Getenv("HERALD_OLLAMA_LIVE") != "1" {
-		t.Skip("set HERALD_OLLAMA_LIVE=1 to run against the configured local Ollama server")
+	if os.Getenv("REEVE_OLLAMA_LIVE") != "1" {
+		t.Skip("set REEVE_OLLAMA_LIVE=1 to run against the configured local Ollama server")
 	}
 
-	baseURL := os.Getenv("HERALD_OLLAMA_URL")
+	baseURL := os.Getenv("REEVE_OLLAMA_URL")
 	if baseURL == "" {
 		baseURL = "http://127.0.0.1:11435"
 	}
-	model := os.Getenv("HERALD_OLLAMA_MODEL")
+	model := os.Getenv("REEVE_OLLAMA_MODEL")
 	if model == "" {
 		model = "qwen3.6:27b-mtp-q4_K_M"
 	}
 	contextSize := 65536
-	if raw := os.Getenv("HERALD_OLLAMA_CONTEXT"); raw != "" {
+	if raw := os.Getenv("REEVE_OLLAMA_CONTEXT"); raw != "" {
 		value, err := strconv.Atoi(raw)
 		if err != nil || value <= 0 {
-			t.Fatalf("HERALD_OLLAMA_CONTEXT must be a positive integer, got %q", raw)
+			t.Fatalf("REEVE_OLLAMA_CONTEXT must be a positive integer, got %q", raw)
 		}
 		contextSize = value
 	}
@@ -94,7 +94,7 @@ func TestLiveOllamaNativeToolLoop(t *testing.T) {
 		t.Fatalf("live tool call = %#v", first.ToolCall)
 	}
 
-	const marker = "HERALD_GO_RUNNER_TOOL_LOOP_OK"
+	const marker = "REEVE_GO_RUNNER_TOOL_LOOP_OK"
 	secondRaw, err := runner.CompleteWithToolsForConversation(
 		ctx,
 		"live-qwen-tool-loop",

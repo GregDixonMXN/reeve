@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"herald/internal/config"
-	"herald/pkg/models"
+	"reeve/internal/config"
+	"reeve/pkg/models"
 )
 
 type Guard struct {

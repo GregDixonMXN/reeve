@@ -1,4 +1,4 @@
-# Herald Python Tool Dependencies
+# Reeve Python Tool Dependencies
 # Install: pip install -r requirements.txt
 
 duckduckgo-search==8.1.1

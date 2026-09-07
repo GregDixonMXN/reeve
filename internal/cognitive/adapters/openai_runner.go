@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 const (
@@ -23,7 +23,7 @@ const (
 	openAIPendingStateTTL       = 10 * time.Minute
 )
 
-// OpenAIRunner implements Herald's completion and native-tool interfaces using
+// OpenAIRunner implements Reeve's completion and native-tool interfaces using
 // the OpenAI Responses API. Responses are kept stateless at the service
 // boundary (store=false). During one active tool loop, opaque response output
 // items are retained in memory and replayed with the matching tool result.
@@ -149,7 +149,7 @@ type openAIParsedResponse struct {
 	argsJSON     string
 }
 
-type openAIHeraldOutput struct {
+type openAIReeveOutput struct {
 	Reasoning string          `json:"reasoning"`
 	ToolCall  *openAIToolCall `json:"tool_call"`
 	Content   string          `json:"content"`
@@ -481,7 +481,7 @@ func convertToOpenAIResponseTools(defs []models.ToolDefinition) []openAIResponse
 			Name:        def.Name,
 			Description: def.Description,
 			Parameters:  def.CanonicalSchema(),
-			// Existing Herald schemas contain genuinely optional properties. They
+			// Existing Reeve schemas contain genuinely optional properties. They
 			// are not compatible with OpenAI strict mode's all-fields-required
 			// invariant, so request best-effort schema adherence explicitly.
 			Strict: false,
@@ -525,7 +525,7 @@ func matchingOpenAIToolResult(messages []models.Message, pending openAIPendingTo
 		return "", false
 	}
 
-	var stored openAIHeraldOutput
+	var stored openAIReeveOutput
 	if err := json.Unmarshal([]byte(assistant.Content), &stored); err != nil || stored.ToolCall == nil {
 		return "", false
 	}
@@ -591,12 +591,12 @@ func parseOpenAIResponsesOutput(output []json.RawMessage) (*openAIParsedResponse
 	}
 
 	if len(functionCalls) > 1 {
-		return nil, fmt.Errorf("openai returned %d function calls; Herald supports one tool call per turn", len(functionCalls))
+		return nil, fmt.Errorf("openai returned %d function calls; Reeve supports one tool call per turn", len(functionCalls))
 	}
 
 	reasoning := strings.Join(reasoningParts, "\n\n")
 	content := strings.Join(contentParts, "\n")
-	out := openAIHeraldOutput{
+	out := openAIReeveOutput{
 		Reasoning: reasoning,
 		Content:   content,
 	}

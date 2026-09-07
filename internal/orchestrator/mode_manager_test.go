@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"herald/internal/cognitive"
-	"herald/internal/config"
+	"reeve/internal/cognitive"
+	"reeve/internal/config"
 )
 
 type modeTestRunner struct{}

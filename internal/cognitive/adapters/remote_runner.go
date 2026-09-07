@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 // Protocol selects which API format to use.
@@ -167,7 +167,7 @@ func appendFallbackToolListing(systemContext string, tools []models.ToolDefiniti
 
 // CompleteWithToolsForConversation preserves Ollama's native assistant
 // thinking/tool-call message across the immediately following tool result.
-// Herald persists a provider-neutral JSON assistant turn, so the native message
+// Reeve persists a provider-neutral JSON assistant turn, so the native message
 // is retained only in memory and keyed by the stable conversation ID.
 func (r *RemoteRunner) CompleteWithToolsForConversation(
 	ctx context.Context,
@@ -377,12 +377,12 @@ func (r *RemoteRunner) chatOllama(
 			r.clearPending(conversationID, epoch)
 		}
 		return "", fmt.Errorf(
-			"ollama returned %d function calls; Herald supports one tool call per turn",
+			"ollama returned %d function calls; Reeve supports one tool call per turn",
 			len(nativeMessage.ToolCalls),
 		)
 	}
 
-	// If Ollama returned a tool call, format it as the JSON Herald's engine
+	// If Ollama returned a tool call, format it as the JSON Reeve's engine
 	// expects while retaining the exact native assistant turn for replay.
 	if len(nativeMessage.ToolCalls) == 1 {
 		tc := nativeMessage.ToolCalls[0]
@@ -566,7 +566,7 @@ func compactOllamaChatMessages(
 		systemCost := estimateOllamaMessageTokens(system)
 		if used+systemCost > messageBudget {
 			return nil, fmt.Errorf(
-				"ollama context_size %d cannot fit Herald's system context and native tool schemas while reserving %d output tokens; increase model.context_size",
+				"ollama context_size %d cannot fit Reeve's system context and native tool schemas while reserving %d output tokens; increase model.context_size",
 				contextSize,
 				generationReserve,
 			)
@@ -1109,7 +1109,7 @@ func normalizeNativeContent(content string) string {
 	return normalizeNativeMessage(content, "")
 }
 
-// normalizeNativeMessage adds Ollama's native thinking field to Herald's
+// normalizeNativeMessage adds Ollama's native thinking field to Reeve's
 // provider-neutral reasoning field while preserving already structured output.
 func normalizeNativeMessage(content, thinking string) string {
 	visibleContent := content
@@ -1168,7 +1168,7 @@ func normalizeNativeMessage(content, thinking string) string {
 	return string(encoded)
 }
 
-// convertToOllamaTools translates Herald's ToolDefinition slice into the
+// convertToOllamaTools translates Reeve's ToolDefinition slice into the
 // OpenAI-style JSON format that Ollama's /api/chat endpoint expects.
 func convertToOllamaTools(defs []models.ToolDefinition) []ollamaTool {
 	tools := make([]ollamaTool, 0, len(defs))
@@ -1241,7 +1241,7 @@ func (r *RemoteRunner) completeOllama(ctx context.Context, prompt string, maxTok
 	}
 	// Preserve the legacy runner's raw response semantics so Engine can still
 	// detect malformed JSON and issue its corrective retry. Engine already
-	// understands <think> blocks and maps them into Herald reasoning.
+	// understands <think> blocks and maps them into Reeve reasoning.
 	return "<think>" + result.Thinking + "</think>" + result.Response, nil
 }
 

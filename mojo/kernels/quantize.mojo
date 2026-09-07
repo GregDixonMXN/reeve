@@ -1,5 +1,5 @@
 """
-Herald Quantization Kernel
+Reeve Quantization Kernel
 ═════════════════════════
 SIMD-accelerated vector quantization for memory-efficient storage.
 

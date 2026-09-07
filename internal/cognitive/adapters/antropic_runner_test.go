@@ -36,7 +36,7 @@ func TestAnthropicRunnerRejectsMultipleToolUses(t *testing.T) {
 		{
 			name: "tool-aware serialization",
 			run: func() error {
-				_, err := runner.serializeToHeraldJSON(&response)
+				_, err := runner.serializeToReeveJSON(&response)
 				return err
 			},
 		},

@@ -1,4 +1,4 @@
-// Package scripts embeds Herald's trusted Python tool entrypoints so packaged
+// Package scripts embeds Reeve's trusted Python tool entrypoints so packaged
 // desktop builds do not depend on the process working directory.
 package scripts
 

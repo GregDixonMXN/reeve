@@ -24,13 +24,13 @@ jobs:
       # is removed from the repository and its history.
       - name: Check out source without model artifacts
         env:
-          HERALD_GITHUB_TOKEN: ${{ github.token }}
+          REEVE_GITHUB_TOKEN: ${{ github.token }}
         run: |
           git init .
           git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
           git sparse-checkout init --no-cone
           git sparse-checkout set --no-cone '/*' '!/models/'
-          authorization="$(printf 'x-access-token:%s' "${HERALD_GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          authorization="$(printf 'x-access-token:%s' "${REEVE_GITHUB_TOKEN}" | base64 | tr -d '\n')"
           git \
             -c protocol.version=2 \
             -c "http.extraheader=AUTHORIZATION: basic ${authorization}" \

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"herald/internal/config"
-	"herald/internal/memory"
-	"herald/pkg/models"
+	"reeve/internal/config"
+	"reeve/internal/memory"
+	"reeve/pkg/models"
 )
 
 // LLMRunner is the interface any inference backend must implement.
@@ -34,7 +34,7 @@ type ToolAwareRunner interface {
 // ConversationToolAwareRunner extends native tool calling with a stable
 // conversation key. Providers that must preserve opaque reasoning/tool items
 // across an active tool loop can use this without leaking provider state into
-// Herald's persisted message model.
+// Reeve's persisted message model.
 type ConversationToolAwareRunner interface {
 	ToolAwareRunner
 	CompleteWithToolsForConversation(
@@ -208,17 +208,17 @@ func nativeJSONCorrectionInstruction() string {
 	return "FORMAT CORRECTION:\n" + jsonCorrectionInstruction() + "\n\n"
 }
 
-// loadUserContextFile reads HERALD.md from the project root (if it exists) and
+// loadUserContextFile reads REEVE.md from the project root (if it exists) and
 // returns its contents for injection into the system prompt. This lets the user
 // define persistent context: their name, preferred stack, project conventions,
-// working directory preferences — anything Herald should always know.
+// working directory preferences — anything Reeve should always know.
 func loadUserContextFile(projectRoot string) string {
 	if projectRoot == "" {
 		return ""
 	}
 	candidates := []string{
-		filepath.Join(projectRoot, "HERALD.md"),
-		filepath.Join(projectRoot, "herald.md"),
+		filepath.Join(projectRoot, "REEVE.md"),
+		filepath.Join(projectRoot, "reeve.md"),
 	}
 	for _, path := range candidates {
 		data, err := os.ReadFile(path)
@@ -265,7 +265,7 @@ func modeRule2(mode string) string {
 // native tool calls rather than embedding tool calls in a JSON content field.
 func buildSystemPrompt(mode string) string {
 	if mode == "cloud" {
-		return `You are Herald — a precise, capable autonomous agent. Sharp, resourceful, and purposeful.
+		return `You are Reeve — a precise, capable autonomous agent. Sharp, resourceful, and purposeful.
 
 ` + modeRule2(mode) + `
 
@@ -281,7 +281,7 @@ RULES:
 11. PERSONA: Be direct, precise, and resourceful. Skip filler. Have opinions. Come back with answers, not questions.`
 	}
 
-	return `You are Herald — a precise, capable autonomous operator. Sharp, resourceful, and purposeful. Not a search engine with a chat interface, but an agent with judgment and opinions. You come back with answers, not questions.
+	return `You are Reeve — a precise, capable autonomous operator. Sharp, resourceful, and purposeful. Not a search engine with a chat interface, but an agent with judgment and opinions. You come back with answers, not questions.
 
 CRITICAL RULES:
 1. Respond ONLY with a single, valid JSON object.
@@ -300,7 +300,7 @@ CRITICAL RULES:
    - When building a project with multiple files: call write_file for EACH file individually, one tool call per iteration. Never batch them in content.
    - SELF-CHECK before every response: Am I about to put code in "content"? If yes, STOP and put it in a write_file tool call instead.
 7. TASK COMPLETION: When you have fully completed the user's request and have no more tool calls to make, you MUST include the exact token <TASK_COMPLETE> at the end of your "content" field. This signals the agent loop to stop. Do NOT output <TASK_COMPLETE> if you still have pending tool calls.
-8. PERSONA: You are Herald. Be direct, precise, and resourceful. Skip filler phrases like "Great question!" or "I'd be happy to help". Have opinions. If something is wrong, say so. Come back with answers, not questions. Earn trust through competence.
+8. PERSONA: You are Reeve. Be direct, precise, and resourceful. Skip filler phrases like "Great question!" or "I'd be happy to help". Have opinions. If something is wrong, say so. Come back with answers, not questions. Earn trust through competence.
 
 RESPONSE FORMAT:
 {
@@ -331,7 +331,7 @@ func (e *Engine) buildSystemSectionWithToolListing(req Request, includeToolListi
 	// Current date/time — injected so the LLM never has to guess or estimate
 	section += fmt.Sprintf("\nCURRENT DATE/TIME: %s\n", time.Now().Format("Monday, January 2 2006 — 15:04 MST"))
 
-	// User context file — HERALD.md in the project root (if it exists)
+	// User context file — REEVE.md in the project root (if it exists)
 	if userCtx := loadUserContextFile(e.cfg.ProjectRoot); userCtx != "" {
 		section += "\nUSER CONTEXT:\n" + userCtx + "\n"
 	}

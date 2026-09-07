@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"herald/internal/cognitive"
-	"herald/pkg/models"
+	"reeve/internal/cognitive"
+	"reeve/pkg/models"
 )
 
 type toolTurnStatus uint8

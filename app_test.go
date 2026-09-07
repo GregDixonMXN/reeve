@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"herald/internal/cognitive"
-	"herald/internal/config"
-	"herald/internal/guardrail"
-	"herald/internal/memory"
-	"herald/internal/orchestrator"
-	"herald/internal/tools"
-	"herald/pkg/logger"
-	"herald/pkg/models"
+	"reeve/internal/cognitive"
+	"reeve/internal/config"
+	"reeve/internal/guardrail"
+	"reeve/internal/memory"
+	"reeve/internal/orchestrator"
+	"reeve/internal/tools"
+	"reeve/pkg/logger"
+	"reeve/pkg/models"
 )
 
 type appTestRunner struct{ called bool }
@@ -58,14 +58,14 @@ func (c *blockingRunCancellationCoordinator) ClearQueuedAgentLoopCancellation(co
 
 func TestFindConfigPathMarksExplicitSelectionRequired(t *testing.T) {
 	explicit := filepath.Join(t.TempDir(), "missing.toml")
-	t.Setenv("HERALD_CONFIG", "  "+explicit+"  ")
+	t.Setenv("REEVE_CONFIG", "  "+explicit+"  ")
 
 	path, required := findConfigPath()
 	if path != explicit {
 		t.Fatalf("findConfigPath path = %q, want %q", path, explicit)
 	}
 	if !required {
-		t.Fatal("explicit HERALD_CONFIG was not marked required")
+		t.Fatal("explicit REEVE_CONFIG was not marked required")
 	}
 }
 

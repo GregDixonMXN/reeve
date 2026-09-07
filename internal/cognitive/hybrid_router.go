@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 const classifierPrompt = `You are a task classifier. Analyze the user's request and output EXACTLY one word.
@@ -69,7 +69,7 @@ func classifyByHeuristic(msg string) RouteDecision {
 	wordCount := len(words)
 
 	// Strong cloud intent wins even for concise requests such as
-	// "analyze the herald project".
+	// "analyze the reeve project".
 	for _, kw := range cloudKeywords {
 		if containsIntentKeyword(normalized, kw) {
 			return RouteCloud

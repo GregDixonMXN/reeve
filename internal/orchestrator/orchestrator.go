@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"herald/internal/cognitive"
-	"herald/internal/guardrail"
-	"herald/internal/memory"
-	"herald/internal/tools"
-	"herald/pkg/logger"
-	"herald/pkg/models"
+	"reeve/internal/cognitive"
+	"reeve/internal/guardrail"
+	"reeve/internal/memory"
+	"reeve/internal/tools"
+	"reeve/pkg/logger"
+	"reeve/pkg/models"
 )
 
 // MaxToolIterationsLocal is the agent loop ceiling for local and hybrid modes.
@@ -915,7 +915,7 @@ func deriveConversationTitle(prompt string) string {
 
 // maxIterations returns the agent loop ceiling for the current mode.
 // If a custom limit is configured (> 0), it takes precedence over mode defaults.
-// Set to a very large number (e.g. 9999) in herald.toml to effectively uncap.
+// Set to a very large number (e.g. 9999) in reeve.toml to effectively uncap.
 func (o *Orchestrator) maxIterations() int {
 	if o.iterationLimit > 0 {
 		return o.iterationLimit
@@ -926,7 +926,7 @@ func (o *Orchestrator) maxIterations() int {
 	return MaxToolIterationsLocal
 }
 
-// loadProjectContext scans workspace dirs for context files (README.md, HERALD.md,
+// loadProjectContext scans workspace dirs for context files (README.md, REEVE.md,
 // go.mod, package.json, Cargo.toml) in paths referenced by the user prompt and
 // injects their contents as a system prefix. This gives the LLM the same "lay of
 // the land" a human engineer would have before touching a project.
@@ -959,7 +959,7 @@ func (o *Orchestrator) loadProjectContext(ctx context.Context, prompt string) st
 	}
 
 	contextFiles := []string{
-		"README.md", "HERALD.md", "go.mod", "package.json",
+		"README.md", "REEVE.md", "go.mod", "package.json",
 		"Cargo.toml", "pyproject.toml", "requirements.txt", "Makefile",
 	}
 

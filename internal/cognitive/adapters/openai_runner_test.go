@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"herald/pkg/models"
+	"reeve/pkg/models"
 )
 
 type capturedOpenAIRequest struct {
@@ -72,9 +72,9 @@ func TestOpenAIRunnerBuildsResponsesRequestAndParsesText(t *testing.T) {
 		t.Fatalf("CompleteWithToolsForConversation() error = %v", err)
 	}
 
-	var output openAIHeraldOutput
+	var output openAIReeveOutput
 	if err := json.Unmarshal([]byte(raw), &output); err != nil {
-		t.Fatalf("decode Herald output: %v", err)
+		t.Fatalf("decode Reeve output: %v", err)
 	}
 	if output.Content != "done" || output.ToolCall != nil {
 		t.Fatalf("output = %#v, want final content %q", output, "done")
@@ -229,7 +229,7 @@ func TestOpenAIRunnerPreservesRawOutputAcrossToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first completion error = %v", err)
 	}
-	var first openAIHeraldOutput
+	var first openAIReeveOutput
 	if err := json.Unmarshal([]byte(firstRaw), &first); err != nil {
 		t.Fatalf("decode first output: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestOpenAIRunnerPreservesRawOutputAcrossToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second completion error = %v", err)
 	}
-	var second openAIHeraldOutput
+	var second openAIReeveOutput
 	if err := json.Unmarshal([]byte(secondRaw), &second); err != nil {
 		t.Fatalf("decode second output: %v", err)
 	}

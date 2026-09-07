@@ -3,9 +3,9 @@ package orchestrator
 import (
 	"context"
 
-	"herald/internal/cognitive"
-	"herald/internal/memory"
-	"herald/pkg/models"
+	"reeve/internal/cognitive"
+	"reeve/internal/memory"
+	"reeve/pkg/models"
 )
 
 type toolLoopPolicy struct {
