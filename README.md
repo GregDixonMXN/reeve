@@ -242,6 +242,8 @@ npm --prefix frontend run check
 
 GitHub Actions runs the same frontend, Python, Go vet, and race checks on every
 push and pull request. The manual `release-readiness` workflow builds and hashes
-the Linux binary but deliberately cannot upload or publish it. Publication must
-remain disabled until the historical GGUF and legacy credential material have
-been removed from Git history and the affected credentials have been rotated.
+the Linux binary but deliberately cannot upload or publish it.
+(Historical note: the 9 GB model blob was stripped from Git history and the
+legacy Anthropic/Google credentials scrubbed and confirmed dead before the
+repo went public. API keys live only in environment variables — never in
+`axiom.toml`, which is git-ignored.)
