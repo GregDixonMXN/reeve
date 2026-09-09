@@ -165,6 +165,7 @@ func runExec(p *Policy, argv []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSec+5)*time.Second)
 	defer cancel()
+	start := time.Now()
 	res := sb.ExecuteArgs(ctx, argv, cwd, nil)
 	fmt.Print(res.String())
 	if res.Error != "" {
@@ -176,7 +177,53 @@ func runExec(p *Policy, argv []string) int {
 	if res.ExitCode != 0 {
 		return fail("command exited %d", res.ExitCode)
 	}
+	// Post-run verdict: argv gating cannot see files the process creates at
+	// runtime. Any deny/secret-glob file (re)written by this run flips the
+	// verdict to deny — same rule as the check path, applied to outputs.
+	if hit := scanOutputs(cwd, p, start); hit != "" {
+		return deny("run produced %s", hit)
+	}
 	return 0
+}
+
+// scanOutputs returns the first deny/secret-glob file under root modified
+// at or after start, or "" when the run produced none.
+func scanOutputs(root string, p *Policy, start time.Time) string {
+	hit := ""
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if hit != "" || err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == ".annalist" || d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.ModTime().Before(start) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		for _, g := range p.DenyGlobs {
+			if globMatch(g, rel) {
+				hit = fmt.Sprintf("%s (policy deny_glob)", rel)
+				return nil
+			}
+		}
+		for _, g := range DefaultSecretGlobs {
+			if globMatch(g, rel) {
+				hit = fmt.Sprintf("%s (secret)", rel)
+				return nil
+			}
+		}
+		return nil
+	})
+	return hit
 }
 
 func runSchema(tool string) int {

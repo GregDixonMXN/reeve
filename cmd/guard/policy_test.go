@@ -174,4 +174,13 @@ func TestExecProofs(t *testing.T) {
 	if _, err := os.Stat("canary-outside"); !os.IsNotExist(err) {
 		t.Errorf("chained payload escaped: canary exists")
 	}
+	// P4: runtime secret writes flip a successful run to deny.
+	if err := os.WriteFile("evil.py", []byte("from pathlib import Path\nPath('.env').write_text('x')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := runExec(p, []string{"python3", "evil.py"}); got != 2 {
+		t.Errorf("exec runtime secret = %d, want 2", got)
+	}
+	_ = os.Remove(".env")
+	_ = os.Remove("evil.py")
 }
