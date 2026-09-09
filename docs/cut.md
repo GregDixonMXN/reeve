@@ -38,3 +38,12 @@ the binaries.
 (`reeve/internal/...`). Zero copy, proves the CLI surface. Split to
 `GregDixonMXN/guard` only when `guard check/exec` + the five deny tests
 are green with `-race`.
+
+## Split (done 2026-09-09)
+
+Landed as GregDixonMXN/guard `main`: guardrail + tool-schema models +
+sandbox copied over, imports rewritten, `config.SecurityConfig` replaced
+by a local struct (same three fields), `pathWithin` extracted from the
+registry, `package tools` renamed to `sandbox`. `-race` green standalone;
+stranger command verified from the split binary. `cmd/guard` remains here
+as the in-repo prototype; freeze it unless Guard needs a caller fix.
