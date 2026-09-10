@@ -1,7 +1,7 @@
 # Guard cut (from Reeve)
 
-Product: a CLI that answers "may this process do that" — `guard check`,
-`guard exec`, `guard schema`. Exits 0 allow, 2 deny, 1 broken (same
+Product: a CLI that answers "may this process do that" — `paldron check`,
+`paldron exec`, `paldron schema`. Exits 0 allow, 2 deny, 1 broken (same
 numbers as `annalist gate`). Reeve stays the dogfood host; do not merge
 the binaries.
 
@@ -36,12 +36,12 @@ the binaries.
 
 `cmd/guard` lives in this module and imports the take-set in place
 (`reeve/internal/...`). Zero copy, proves the CLI surface. Split to
-`GregDixonMXN/guard` only when `guard check/exec` + the five deny tests
+`GregDixonMXN/paldron` only when `paldron check/exec` + the five deny tests
 are green with `-race`.
 
 ## Split (done 2026-09-09)
 
-Landed as GregDixonMXN/guard `main`: guardrail + tool-schema models +
+Landed as GregDixonMXN/paldron `main`: guardrail + tool-schema models +
 sandbox copied over, imports rewritten, `config.SecurityConfig` replaced
 by a local struct (same three fields), `pathWithin` extracted from the
 registry, `package tools` renamed to `sandbox`. `-race` green standalone;
